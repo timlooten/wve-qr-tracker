@@ -439,425 +439,450 @@ def code_export(code_id):
                     headers={'Content-Disposition': f'attachment; filename=scans_{code_id}.csv'})
 
 # ─── Templates ───────────────────────────────────────────────────────────────
-
-_BASE = '''<!DOCTYPE html>
+# Gedeelde stijl en layout
+_HEAD = '''<!DOCTYPE html>
 <html lang="nl">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QR Tracker — WVE</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 <style>
-body{background:#f5f7fa}
-.sidebar{width:220px;min-height:100vh;background:#1a1a2e;color:#ccc}
-.sidebar a{color:#adb5bd;text-decoration:none;padding:10px 20px;display:block}
-.sidebar a:hover,.sidebar a.active{background:#0d6efd22;color:#fff}
-.sidebar .brand{color:#fff;font-weight:700;font-size:1.1rem;padding:20px}
-.main{flex:1;padding:30px}
-.stat-card{border-radius:12px;border:none}
-.scan-badge{font-size:.75rem}
+:root{
+  --wve-basis:#375e53;
+  --wve-primary:#2D6A4F;
+  --wve-accent:#40916C;
+  --wve-bright:#52B788;
+  --wve-light:#74C69D;
+  --wve-pale:#B7E4C7;
+  --wve-offwhite:#F5F9F7;
+  --wve-dark:#1B3A2D;
+  --wve-text:#1a2e26;
+  --wve-muted:#4A5568;
+}
+*{font-family:'Poppins',sans-serif}
+body{background:#fff;color:var(--wve-text)}
+/* Accent bar */
+.accent-bar{height:4px;background:var(--wve-basis);width:100%}
+/* Sidebar */
+.sidebar{width:230px;min-height:calc(100vh - 4px);background:var(--wve-basis);display:flex;flex-direction:column}
+.sidebar .brand{color:#fff;font-weight:700;font-size:.95rem;padding:22px 20px 6px;letter-spacing:.02em}
+.sidebar .brand small{display:block;color:var(--wve-bright);font-size:.68rem;font-weight:400;letter-spacing:.08em;text-transform:uppercase;margin-top:2px}
+.sidebar a{color:#c0d9d3;text-decoration:none;padding:10px 20px;display:flex;align-items:center;font-size:.84rem;transition:all .15s;border-left:3px solid transparent}
+.sidebar a i{width:18px;text-align:center;margin-right:9px}
+.sidebar a:hover{background:rgba(82,183,136,.14);color:#fff;border-left-color:var(--wve-bright)}
+.sidebar .sidebar-footer{color:#7fa89f;font-size:.73rem;padding:16px 20px;border-top:1px solid rgba(82,183,136,.2);margin-top:auto}
+/* Main */
+.main{flex:1;padding:32px;background:#fff;max-width:100%}
+.page-title{font-size:1.15rem;font-weight:700;color:var(--wve-basis);margin-bottom:24px;display:flex;align-items:center;gap:10px}
+/* Stat cards */
+.stat-card{background:var(--wve-offwhite);border-radius:10px;border:none;border-left:4px solid var(--wve-bright);box-shadow:0 2px 8px rgba(55,94,83,.08);padding:18px 20px}
+.stat-card .stat-label{font-size:.72rem;color:var(--wve-muted);text-transform:uppercase;letter-spacing:.07em;font-weight:500;margin-bottom:4px}
+.stat-card .stat-value{font-size:1.9rem;font-weight:700;color:var(--wve-basis);line-height:1.1}
+.stat-card .stat-value.green{color:var(--wve-accent)}
+.stat-card .stat-value.bright{color:var(--wve-bright)}
+/* Cards */
+.wve-card{background:var(--wve-offwhite);border-radius:10px;border:none;box-shadow:0 2px 8px rgba(55,94,83,.08)}
+.wve-card .card-header{background:transparent;border-bottom:1px solid var(--wve-pale);font-weight:600;color:var(--wve-basis);font-size:.85rem;padding:13px 18px;text-transform:uppercase;letter-spacing:.05em}
+.wve-card .card-body{padding:18px}
+.wve-card.p-0 .card-body{padding:0}
+/* Table */
+.table{font-size:.83rem}
+.table thead th{color:var(--wve-basis);font-weight:600;font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid var(--wve-pale);background:var(--wve-offwhite);padding:10px 14px}
+.table td{vertical-align:middle;border-color:var(--wve-pale);padding:9px 14px;color:var(--wve-text)}
+.table-hover tbody tr:hover td{background:rgba(245,249,247,.9)}
+/* Buttons */
+.btn-wve{background:var(--wve-accent);color:#fff;border:none;border-radius:7px;font-size:.82rem;font-weight:500;padding:8px 16px;transition:background .15s}
+.btn-wve:hover{background:var(--wve-primary);color:#fff}
+.btn-wve-sm{padding:5px 12px;font-size:.78rem}
+.btn-wve-outline{border:1.5px solid var(--wve-accent);color:var(--wve-accent);background:transparent;border-radius:7px;font-size:.82rem;padding:7px 14px;transition:all .15s}
+.btn-wve-outline:hover{background:var(--wve-offwhite);color:var(--wve-primary);border-color:var(--wve-primary)}
+/* Badges */
+.dev-badge{font-size:.72rem;padding:3px 10px;border-radius:20px;font-weight:500}
+.dev-mobiel{background:var(--wve-bright);color:#fff}
+.dev-tablet{background:var(--wve-light);color:#fff}
+.dev-desktop{background:var(--wve-primary);color:#fff}
+.dev-onbekend{background:#e2e8f0;color:#4A5568}
+/* Links */
+a{color:var(--wve-accent)}
+a:hover{color:var(--wve-primary)}
+/* Code */
+code{color:var(--wve-primary);background:var(--wve-offwhite);padding:2px 6px;border-radius:4px;font-size:.83em}
+/* Alert */
+.alert-info{background:var(--wve-offwhite);border-color:var(--wve-pale);color:var(--wve-basis)}
+/* Forms */
+.form-label{font-weight:500;font-size:.85rem;color:var(--wve-basis)}
+.form-control:focus{border-color:var(--wve-bright);box-shadow:0 0 0 .2rem rgba(82,183,136,.2)}
+.form-text{font-size:.77rem;color:var(--wve-muted)}
+/* Separator */
+hr{border-color:var(--wve-pale);opacity:1}
 </style>
-</head>
-<body>
-<div class="d-flex">
-  <div class="sidebar d-flex flex-column">
-    <div class="brand">QR Tracker</div>
-    <a href="/admin"><i class="bi bi-speedometer2 me-2"></i>Dashboard</a>
-    <a href="/admin/codes"><i class="bi bi-qr-code me-2"></i>QR Codes</a>
-    <a href="/admin/codes/new"><i class="bi bi-plus-circle me-2"></i>Nieuwe code</a>
-    <div class="mt-auto mb-3">
-      <a href="/logout"><i class="bi bi-box-arrow-left me-2"></i>Uitloggen</a>
-    </div>
-  </div>
-  <div class="main">
-    {% with msgs = get_flashed_messages() %}
-      {% if msgs %}
-        {% for m in msgs %}
-          <div class="alert alert-info alert-dismissible fade show">{{m}}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-          </div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
-    {% block content %}{% endblock %}
-  </div>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-{% block scripts %}{% endblock %}
-</body>
-</html>'''
+</head>'''
 
-LOGIN_TMPL = '''<!DOCTYPE html>
-<html lang="nl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Login — QR Tracker</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head><body class="bg-light d-flex align-items-center" style="min-height:100vh">
-<div class="container" style="max-width:360px">
-  <div class="card shadow-sm">
+_SIDEBAR = '''<div class="accent-bar"></div>
+<div class="d-flex">
+<div class="sidebar">
+  <div class="brand">QR Tracker<small>Wij Vergelijken Energie</small></div>
+  <a href="/admin"><i class="bi bi-speedometer2"></i>Dashboard</a>
+  <a href="/admin/codes"><i class="bi bi-qr-code"></i>QR Codes</a>
+  <a href="/admin/codes/new"><i class="bi bi-plus-circle"></i>Nieuwe code</a>
+  <div class="sidebar-footer">qr.wve.nl</div>
+</div>
+<div class="main">
+{% with msgs = get_flashed_messages() %}
+{% if msgs %}{% for m in msgs %}
+<div class="alert alert-info alert-dismissible fade show py-2 mb-3" style="font-size:.84rem">{{m}}
+<button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button></div>
+{% endfor %}{% endif %}
+{% endwith %}'''
+
+_FOOTER = '''</div></div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>'''
+
+LOGIN_TMPL = _HEAD + '''
+<body style="background:var(--wve-offwhite);min-height:100vh;display:flex;align-items:center;justify-content:center">
+<div class="accent-bar" style="position:fixed;top:0;left:0;right:0"></div>
+<div style="width:100%;max-width:380px;padding:20px">
+  <div style="text-align:center;margin-bottom:28px">
+    <div style="font-size:1.1rem;font-weight:700;color:var(--wve-basis)">QR Tracker</div>
+    <div style="font-size:.75rem;color:var(--wve-muted);text-transform:uppercase;letter-spacing:.08em">Wij Vergelijken Energie</div>
+  </div>
+  <div class="wve-card">
     <div class="card-body p-4">
-      <h4 class="mb-4 text-center">QR Tracker</h4>
-      {% if error %}<div class="alert alert-danger">{{error}}</div>{% endif %}
+      {% if error %}
+      <div class="alert alert-danger py-2 mb-3" style="font-size:.83rem">{{error}}</div>
+      {% endif %}
       <form method="post">
         <div class="mb-3">
-          <input type="password" name="password" class="form-control"
-                 placeholder="Wachtwoord" autofocus required>
+          <label class="form-label">Wachtwoord</label>
+          <input type="password" name="password" class="form-control" autofocus required>
         </div>
-        <button class="btn btn-primary w-100">Inloggen</button>
+        <button class="btn-wve w-100" style="padding:10px">Inloggen</button>
       </form>
     </div>
   </div>
-</div></body></html>'''
+</div>
+</body></html>'''
 
-DASHBOARD_TMPL = _BASE.replace('{% block content %}{% endblock %}', '''{% block content %}
-<h4 class="mb-4">Dashboard</h4>
+DASHBOARD_TMPL = _HEAD + '<body>' + _SIDEBAR + '''
+<div class="page-title"><i class="bi bi-speedometer2"></i>Dashboard</div>
 
 <div class="row g-3 mb-4">
   <div class="col-sm-6 col-lg-3">
-    <div class="card stat-card shadow-sm">
-      <div class="card-body">
-        <div class="text-muted small">Totaal scans</div>
-        <div class="fs-2 fw-bold">{{stats.total_scans}}</div>
-      </div>
+    <div class="stat-card">
+      <div class="stat-label">Totaal scans</div>
+      <div class="stat-value">{{stats.total_scans}}</div>
     </div>
   </div>
   <div class="col-sm-6 col-lg-3">
-    <div class="card stat-card shadow-sm">
-      <div class="card-body">
-        <div class="text-muted small">Vandaag</div>
-        <div class="fs-2 fw-bold text-primary">{{stats.scans_today}}</div>
-      </div>
+    <div class="stat-card">
+      <div class="stat-label">Vandaag</div>
+      <div class="stat-value green">{{stats.scans_today}}</div>
     </div>
   </div>
   <div class="col-sm-6 col-lg-3">
-    <div class="card stat-card shadow-sm">
-      <div class="card-body">
-        <div class="text-muted small">Deze week</div>
-        <div class="fs-2 fw-bold text-success">{{stats.scans_week}}</div>
-      </div>
+    <div class="stat-card">
+      <div class="stat-label">Deze week</div>
+      <div class="stat-value bright">{{stats.scans_week}}</div>
     </div>
   </div>
   <div class="col-sm-6 col-lg-3">
-    <div class="card stat-card shadow-sm">
-      <div class="card-body">
-        <div class="text-muted small">Actieve codes</div>
-        <div class="fs-2 fw-bold">{{stats.active_codes}} / {{stats.total_codes}}</div>
-      </div>
+    <div class="stat-card">
+      <div class="stat-label">Actieve codes</div>
+      <div class="stat-value">{{stats.active_codes}}<span style="font-size:1rem;color:var(--wve-muted);font-weight:400"> / {{stats.total_codes}}</span></div>
     </div>
   </div>
 </div>
 
 <div class="row g-3 mb-4">
   <div class="col-lg-8">
-    <div class="card shadow-sm">
-      <div class="card-header bg-white fw-semibold">Scans per dag (30 dagen)</div>
-      <div class="card-body"><canvas id="scanChart" height="100"></canvas></div>
+    <div class="wve-card">
+      <div class="card-header">Scans per dag — 30 dagen</div>
+      <div class="card-body"><canvas id="scanChart" height="110"></canvas></div>
     </div>
   </div>
   <div class="col-lg-4">
-    <div class="card shadow-sm h-100">
-      <div class="card-header bg-white fw-semibold">Top codes</div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          {% for c in top_codes %}
-          <tr>
-            <td><a href="/admin/codes/{{c.id}}">{{c.name}}</a></td>
-            <td class="text-end text-muted">{{c.scan_count}}</td>
-          </tr>
-          {% endfor %}
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="card shadow-sm">
-  <div class="card-header bg-white fw-semibold">Recente scans</div>
-  <div class="card-body p-0">
-    <table class="table table-sm mb-0">
-      <thead class="table-light">
-        <tr><th>Tijdstip</th><th>Code</th><th>Land</th><th>Stad</th><th>Apparaat</th><th>Browser</th></tr>
-      </thead>
-      <tbody>
-        {% for s in recent %}
-        <tr>
-          <td class="text-muted small">{{s.scanned_at}}</td>
-          <td><a href="/admin/codes/{{s.code_id}}">{{s.code_name}}</a></td>
-          <td>{{s.country or '—'}}</td>
-          <td>{{s.city or '—'}}</td>
-          <td><span class="badge bg-secondary scan-badge">{{s.device or '?'}}</span></td>
-          <td class="small text-muted">{{s.browser or '—'}}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-{% endblock %}
-{% block scripts %}
-<script>
-new Chart(document.getElementById('scanChart'), {
-  type: 'bar',
-  data: {
-    labels: {{chart_labels|safe}},
-    datasets: [{
-      label: 'Scans',
-      data: {{chart_values|safe}},
-      backgroundColor: '#0d6efd88',
-      borderColor: '#0d6efd',
-      borderWidth: 1,
-    }]
-  },
-  options: {plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}
-});
-</script>
-{% endblock %}''').replace('{% block content %}{% endblock %}', '').replace('{% block scripts %}{% endblock %}', '')
-
-CODES_TMPL = _BASE.replace('{% block content %}{% endblock %}', '''{% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-  <h4 class="mb-0">QR Codes</h4>
-  <a href="/admin/codes/new" class="btn btn-primary btn-sm">
-    <i class="bi bi-plus-circle me-1"></i>Nieuwe code
-  </a>
-</div>
-<div class="card shadow-sm">
-  <div class="card-body p-0">
-    <table class="table table-hover mb-0">
-      <thead class="table-light">
-        <tr>
-          <th>Naam</th><th>Code</th><th>Campagne</th>
-          <th>Bestemming</th><th>Scans</th><th>Laatste scan</th>
-          <th>Status</th><th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for c in codes %}
+    <div class="wve-card h-100">
+      <div class="card-header">Top codes</div>
+      <table class="table mb-0">
+        {% for c in top_codes %}
         <tr>
           <td><a href="/admin/codes/{{c.id}}">{{c.name}}</a></td>
-          <td><code>{{c.id}}</code></td>
-          <td>{{c.campaign or '—'}}</td>
-          <td class="small text-muted text-truncate" style="max-width:180px">{{c.destination}}</td>
-          <td><strong>{{c.scan_count}}</strong></td>
-          <td class="small text-muted">{{c.last_scan or '—'}}</td>
-          <td>
-            {% if c.is_active %}
-              <span class="badge bg-success">actief</span>
-            {% else %}
-              <span class="badge bg-secondary">uit</span>
-            {% endif %}
-          </td>
-          <td>
-            <a href="/admin/codes/{{c.id}}/qr.png" class="btn btn-outline-secondary btn-sm" title="Download QR">
-              <i class="bi bi-download"></i>
-            </a>
-            <a href="/admin/codes/{{c.id}}/toggle" class="btn btn-outline-secondary btn-sm" title="Toggle actief">
-              <i class="bi bi-toggle-on"></i>
-            </a>
-          </td>
+          <td class="text-end fw-600" style="color:var(--wve-accent);font-weight:600">{{c.scan_count}}</td>
         </tr>
         {% endfor %}
-        {% if not codes %}
-        <tr><td colspan="8" class="text-center text-muted py-4">Nog geen QR codes</td></tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
-</div>
-{% endblock %}''').replace('{% block scripts %}{% endblock %}', '')
-
-CODE_NEW_TMPL = _BASE.replace('{% block content %}{% endblock %}', '''{% block content %}
-<h4 class="mb-4">Nieuwe QR code</h4>
-<div class="card shadow-sm" style="max-width:560px">
-  <div class="card-body">
-    <form method="post">
-      <div class="mb-3">
-        <label class="form-label fw-semibold">Naam <span class="text-danger">*</span></label>
-        <input type="text" name="name" class="form-control" placeholder="Bv. Poster kantoor Amsterdam" required>
-      </div>
-      <div class="mb-3">
-        <label class="form-label fw-semibold">Bestemmings-URL <span class="text-danger">*</span></label>
-        <input type="text" name="destination" class="form-control" placeholder="https://www.wve.nl" required>
-      </div>
-      <div class="mb-3">
-        <label class="form-label fw-semibold">Campagne</label>
-        <input type="text" name="campaign" class="form-control" placeholder="Bv. zomer2025, poster-nijmegen">
-        <div class="form-text">Handig om codes te groeperen</div>
-      </div>
-      <div class="mb-3">
-        <label class="form-label fw-semibold">Aangepaste code (optioneel)</label>
-        <div class="input-group">
-          <span class="input-group-text text-muted small">/c/</span>
-          <input type="text" name="custom_id" class="form-control" placeholder="bv. poster-ams (leeg = automatisch)">
-        </div>
-      </div>
-      <div class="mb-4">
-        <label class="form-label fw-semibold">Notities</label>
-        <textarea name="notes" class="form-control" rows="2" placeholder="Locatie, formaat, drukker..."></textarea>
-      </div>
-      <div class="d-flex gap-2">
-        <button type="submit" class="btn btn-primary">Aanmaken + QR downloaden</button>
-        <a href="/admin/codes" class="btn btn-outline-secondary">Annuleer</a>
-      </div>
-    </form>
-  </div>
-</div>
-{% endblock %}''').replace('{% block scripts %}{% endblock %}', '')
-
-CODE_DETAIL_TMPL = _BASE.replace('{% block content %}{% endblock %}', '''{% block content %}
-<div class="d-flex justify-content-between align-items-start mb-4">
-  <div>
-    <h4 class="mb-1">{{code.name}}</h4>
-    <div class="text-muted small">
-      <code>{{scan_url}}</code>
-      {% if code.campaign %} · campagne: <strong>{{code.campaign}}</strong>{% endif %}
-    </div>
-    {% if code.notes %}<div class="text-muted small mt-1">{{code.notes}}</div>{% endif %}
-  </div>
-  <div class="d-flex gap-2">
-    <a href="/admin/codes/{{code.id}}/qr.png" class="btn btn-outline-primary btn-sm">
-      <i class="bi bi-download me-1"></i>Download QR
-    </a>
-    <a href="/admin/codes/{{code.id}}/export" class="btn btn-outline-secondary btn-sm">
-      <i class="bi bi-filetype-csv me-1"></i>Export CSV
-    </a>
-    <a href="/admin/codes/{{code.id}}/toggle" class="btn btn-outline-secondary btn-sm">
-      {% if code.is_active %}Deactiveer{% else %}Activeer{% endif %}
-    </a>
-  </div>
-</div>
-
-<div class="row g-3 mb-4">
-  <div class="col-sm-4">
-    <div class="card shadow-sm text-center py-3">
-      <div class="fs-1 fw-bold text-primary">{{total_scans}}</div>
-      <div class="text-muted">Totaal scans</div>
-    </div>
-  </div>
-  <div class="col-sm-4">
-    <div class="card shadow-sm text-center py-3">
-      <div class="fs-1 fw-bold">{{unique_ips}}</div>
-      <div class="text-muted">Unieke bezoekers</div>
-    </div>
-  </div>
-  <div class="col-sm-4">
-    <div class="card shadow-sm text-center py-3">
-      <div class="fs-4 fw-bold text-truncate px-2">{{code.destination}}</div>
-      <div class="text-muted">Bestemming</div>
-    </div>
-  </div>
-</div>
-
-<div class="row g-3 mb-4">
-  <div class="col-lg-8">
-    <div class="card shadow-sm">
-      <div class="card-header bg-white fw-semibold">Scans per dag (30 dagen)</div>
-      <div class="card-body"><canvas id="scanChart" height="100"></canvas></div>
-    </div>
-  </div>
-  <div class="col-lg-4">
-    <div class="card shadow-sm">
-      <div class="card-header bg-white fw-semibold">Apparaat</div>
-      <div class="card-body"><canvas id="deviceChart"></canvas></div>
-    </div>
-  </div>
-</div>
-
-<div class="row g-3 mb-4">
-  <div class="col-md-4">
-    <div class="card shadow-sm">
-      <div class="card-header bg-white fw-semibold">Top landen</div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          {% for r in by_country %}
-          <tr><td>{{r.country}}</td><td class="text-end text-muted">{{r.n}}</td></tr>
-          {% endfor %}
-          {% if not by_country %}<tr><td colspan="2" class="text-muted text-center py-3">Geen data</td></tr>{% endif %}
-        </table>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-4">
-    <div class="card shadow-sm">
-      <div class="card-header bg-white fw-semibold">Top steden</div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          {% for r in by_city %}
-          <tr><td>{{r.city}}</td><td class="text-muted small">{{r.country}}</td><td class="text-end">{{r.n}}</td></tr>
-          {% endfor %}
-          {% if not by_city %}<tr><td colspan="3" class="text-muted text-center py-3">Geen data</td></tr>{% endif %}
-        </table>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-4">
-    <div class="card shadow-sm">
-      <div class="card-header bg-white fw-semibold">Besturingssysteem</div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          {% for r in by_os %}
-          <tr><td>{{r.os}}</td><td class="text-end text-muted">{{r.n}}</td></tr>
-          {% endfor %}
-          {% if not by_os %}<tr><td colspan="2" class="text-muted text-center py-3">Geen data</td></tr>{% endif %}
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="card shadow-sm">
-  <div class="card-header bg-white fw-semibold">Recente scans</div>
-  <div class="card-body p-0">
-    <div class="table-responsive">
-      <table class="table table-sm mb-0">
-        <thead class="table-light">
-          <tr><th>Tijdstip</th><th>IP</th><th>Land</th><th>Stad</th><th>ISP</th><th>Apparaat</th><th>OS</th><th>Browser</th><th>Taal</th></tr>
-        </thead>
-        <tbody>
-          {% for s in recent_scans %}
-          <tr>
-            <td class="small text-muted">{{s.scanned_at}}</td>
-            <td class="small"><code>{{s.ip or '—'}}</code></td>
-            <td>{{s.country or '—'}}</td>
-            <td>{{s.city or '—'}}</td>
-            <td class="small text-muted">{{s.isp or '—'}}</td>
-            <td><span class="badge bg-secondary scan-badge">{{s.device or '?'}}</span></td>
-            <td class="small">{{s.os or '—'}}</td>
-            <td class="small">{{s.browser or '—'}}</td>
-            <td class="small text-muted">{{s.language or '—'}}</td>
-          </tr>
-          {% endfor %}
-          {% if not recent_scans %}<tr><td colspan="9" class="text-center text-muted py-4">Nog geen scans</td></tr>{% endif %}
-        </tbody>
+        {% if not top_codes %}<tr><td colspan="2" class="text-center py-4" style="color:var(--wve-muted)">Geen codes</td></tr>{% endif %}
       </table>
     </div>
   </div>
 </div>
-{% endblock %}
-{% block scripts %}
+
+<div class="wve-card">
+  <div class="card-header">Recente scans</div>
+  <table class="table mb-0">
+    <thead>
+      <tr><th>Tijdstip</th><th>Code</th><th>Land</th><th>Stad</th><th>Apparaat</th><th>Browser</th></tr>
+    </thead>
+    <tbody>
+      {% for s in recent %}
+      <tr>
+        <td style="color:var(--wve-muted)">{{s.scanned_at}}</td>
+        <td><a href="/admin/codes/{{s.code_id}}">{{s.code_name}}</a></td>
+        <td>{{s.country or '—'}}</td>
+        <td>{{s.city or '—'}}</td>
+        <td><span class="dev-badge dev-{{s.device or 'onbekend'}}">{{s.device or '?'}}</span></td>
+        <td style="color:var(--wve-muted)">{{s.browser or '—'}}</td>
+      </tr>
+      {% endfor %}
+      {% if not recent %}<tr><td colspan="6" class="text-center py-4" style="color:var(--wve-muted)">Nog geen scans</td></tr>{% endif %}
+    </tbody>
+  </table>
+</div>
+
+''' + _FOOTER + '''
 <script>
-new Chart(document.getElementById('scanChart'), {
-  type: 'bar',
-  data: {
-    labels: {{chart_labels|safe}},
-    datasets: [{label:'Scans',data:{{chart_values|safe}},backgroundColor:'#0d6efd88',borderColor:'#0d6efd',borderWidth:1}]
+new Chart(document.getElementById('scanChart'),{
+  type:'bar',
+  data:{
+    labels:{{chart_labels|safe}},
+    datasets:[{label:'Scans',data:{{chart_values|safe}},
+      backgroundColor:'rgba(82,183,136,.35)',borderColor:'#40916C',borderWidth:2,borderRadius:4}]
   },
-  options: {plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+  options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#B7E4C733'},ticks:{color:'#4A5568',font:{family:'Poppins',size:11}}},x:{grid:{display:false},ticks:{color:'#4A5568',font:{family:'Poppins',size:11}}}}}
 });
-const devData = [{% for r in by_device %}{label:'{{r.device}}',n:{{r.n}}}{% if not loop.last %},{% endif %}{% endfor %}];
+</script>
+</body></html>'''
+
+CODES_TMPL = _HEAD + '<body>' + _SIDEBAR + '''
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div class="page-title mb-0"><i class="bi bi-qr-code"></i>QR Codes</div>
+  <a href="/admin/codes/new" class="btn-wve btn-wve-sm"><i class="bi bi-plus-circle me-1"></i>Nieuwe code</a>
+</div>
+
+<div class="wve-card">
+  <table class="table table-hover mb-0">
+    <thead>
+      <tr><th>Naam</th><th>Code</th><th>Campagne</th><th>Bestemming</th><th>Scans</th><th>Laatste scan</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for c in codes %}
+      <tr>
+        <td><a href="/admin/codes/{{c.id}}">{{c.name}}</a></td>
+        <td><code>{{c.id}}</code></td>
+        <td style="color:var(--wve-muted)">{{c.campaign or '—'}}</td>
+        <td class="text-truncate" style="max-width:180px;color:var(--wve-muted)">{{c.destination}}</td>
+        <td style="font-weight:600;color:var(--wve-accent)">{{c.scan_count}}</td>
+        <td style="color:var(--wve-muted)">{{c.last_scan or '—'}}</td>
+        <td>
+          {% if c.is_active %}
+            <span class="dev-badge" style="background:var(--wve-bright);color:#fff">actief</span>
+          {% else %}
+            <span class="dev-badge" style="background:#e2e8f0;color:#4A5568">uit</span>
+          {% endif %}
+        </td>
+        <td>
+          <a href="/admin/codes/{{c.id}}/qr.png" class="btn-wve-outline btn-wve-sm me-1" title="Download QR"><i class="bi bi-download"></i></a>
+          <a href="/admin/codes/{{c.id}}/toggle" class="btn-wve-outline btn-wve-sm" title="Toggle"><i class="bi bi-toggle-on"></i></a>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not codes %}
+      <tr><td colspan="8" class="text-center py-5" style="color:var(--wve-muted)">Nog geen QR codes — <a href="/admin/codes/new">maak er een aan</a></td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+''' + _FOOTER + '</body></html>'
+
+CODE_NEW_TMPL = _HEAD + '<body>' + _SIDEBAR + '''
+<div class="page-title"><i class="bi bi-plus-circle"></i>Nieuwe QR code</div>
+
+<div class="wve-card" style="max-width:560px">
+  <div class="card-body">
+    <form method="post">
+      <div class="mb-3">
+        <label class="form-label">Naam <span style="color:#e53e3e">*</span></label>
+        <input type="text" name="name" class="form-control" placeholder="Bv. Poster kantoor Amsterdam" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Bestemmings-URL <span style="color:#e53e3e">*</span></label>
+        <input type="text" name="destination" class="form-control" placeholder="https://www.wve.nl" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Campagne</label>
+        <input type="text" name="campaign" class="form-control" placeholder="Bv. zomer2025, poster-nijmegen">
+        <div class="form-text">Gebruik dit om codes te groeperen per actie of locatie</div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Aangepaste code <span style="color:var(--wve-muted);font-weight:400">(optioneel)</span></label>
+        <div class="input-group">
+          <span class="input-group-text" style="font-size:.8rem;color:var(--wve-muted);background:var(--wve-offwhite)">/c/</span>
+          <input type="text" name="custom_id" class="form-control" placeholder="poster-amsterdam  —  leeg = automatisch">
+        </div>
+      </div>
+      <div class="mb-4">
+        <label class="form-label">Notities</label>
+        <textarea name="notes" class="form-control" rows="2" placeholder="Locatie, drukker, formaat..."></textarea>
+      </div>
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn-wve"><i class="bi bi-qr-code me-1"></i>Aanmaken</button>
+        <a href="/admin/codes" class="btn-wve-outline">Annuleer</a>
+      </div>
+    </form>
+  </div>
+</div>
+''' + _FOOTER + '</body></html>'
+
+CODE_DETAIL_TMPL = _HEAD + '<body>' + _SIDEBAR + '''
+<div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-3">
+  <div>
+    <div class="page-title mb-1"><i class="bi bi-bar-chart-line"></i>{{code.name}}</div>
+    <div style="font-size:.82rem;color:var(--wve-muted)">
+      <code>{{scan_url}}</code>
+      {% if code.campaign %} &nbsp;·&nbsp; campagne: <strong style="color:var(--wve-basis)">{{code.campaign}}</strong>{% endif %}
+    </div>
+    {% if code.notes %}<div style="font-size:.8rem;color:var(--wve-muted);margin-top:4px">{{code.notes}}</div>{% endif %}
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a href="/admin/codes/{{code.id}}/qr.png" class="btn-wve btn-wve-sm"><i class="bi bi-download me-1"></i>Download QR</a>
+    <a href="/admin/codes/{{code.id}}/export" class="btn-wve-outline btn-wve-sm"><i class="bi bi-filetype-csv me-1"></i>Export CSV</a>
+    <a href="/admin/codes/{{code.id}}/toggle" class="btn-wve-outline btn-wve-sm">
+      {% if code.is_active %}Deactiveer{% else %}Activeer{% endif %}
+    </a>
+    <a href="/admin/codes" class="btn-wve-outline btn-wve-sm"><i class="bi bi-arrow-left me-1"></i>Terug</a>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-sm-4">
+    <div class="stat-card text-center" style="border-left-color:var(--wve-accent)">
+      <div class="stat-label">Totaal scans</div>
+      <div class="stat-value green">{{total_scans}}</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="stat-card text-center">
+      <div class="stat-label">Unieke bezoekers</div>
+      <div class="stat-value">{{unique_ips}}</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="stat-card text-center" style="border-left-color:var(--wve-pale)">
+      <div class="stat-label">Bestemming</div>
+      <div class="text-truncate" style="font-size:.8rem;font-weight:500;color:var(--wve-basis);margin-top:6px">{{code.destination}}</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-lg-8">
+    <div class="wve-card">
+      <div class="card-header">Scans per dag — 30 dagen</div>
+      <div class="card-body"><canvas id="scanChart" height="110"></canvas></div>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="wve-card h-100">
+      <div class="card-header">Apparaat</div>
+      <div class="card-body d-flex align-items-center justify-content-center">
+        <canvas id="deviceChart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4">
+    <div class="wve-card">
+      <div class="card-header">Top landen</div>
+      <table class="table mb-0">
+        {% for r in by_country %}
+        <tr><td>{{r.country}}</td><td class="text-end" style="color:var(--wve-accent);font-weight:600">{{r.n}}</td></tr>
+        {% endfor %}
+        {% if not by_country %}<tr><td colspan="2" class="text-center py-3" style="color:var(--wve-muted)">Geen data</td></tr>{% endif %}
+      </table>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="wve-card">
+      <div class="card-header">Top steden</div>
+      <table class="table mb-0">
+        {% for r in by_city %}
+        <tr><td>{{r.city}}</td><td style="color:var(--wve-muted)">{{r.country}}</td><td class="text-end" style="color:var(--wve-accent);font-weight:600">{{r.n}}</td></tr>
+        {% endfor %}
+        {% if not by_city %}<tr><td colspan="3" class="text-center py-3" style="color:var(--wve-muted)">Geen data</td></tr>{% endif %}
+      </table>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="wve-card">
+      <div class="card-header">Besturingssysteem</div>
+      <table class="table mb-0">
+        {% for r in by_os %}
+        <tr><td>{{r.os}}</td><td class="text-end" style="color:var(--wve-accent);font-weight:600">{{r.n}}</td></tr>
+        {% endfor %}
+        {% if not by_os %}<tr><td colspan="2" class="text-center py-3" style="color:var(--wve-muted)">Geen data</td></tr>{% endif %}
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="wve-card">
+  <div class="card-header">Recente scans</div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr><th>Tijdstip</th><th>IP</th><th>Land</th><th>Stad</th><th>ISP</th><th>Apparaat</th><th>OS</th><th>Browser</th><th>Taal</th></tr>
+      </thead>
+      <tbody>
+        {% for s in recent_scans %}
+        <tr>
+          <td style="color:var(--wve-muted)">{{s.scanned_at}}</td>
+          <td><code>{{s.ip or '—'}}</code></td>
+          <td>{{s.country or '—'}}</td>
+          <td>{{s.city or '—'}}</td>
+          <td style="color:var(--wve-muted)">{{s.isp or '—'}}</td>
+          <td><span class="dev-badge dev-{{s.device or 'onbekend'}}">{{s.device or '?'}}</span></td>
+          <td>{{s.os or '—'}}</td>
+          <td>{{s.browser or '—'}}</td>
+          <td style="color:var(--wve-muted)">{{s.language or '—'}}</td>
+        </tr>
+        {% endfor %}
+        {% if not recent_scans %}<tr><td colspan="9" class="text-center py-5" style="color:var(--wve-muted)">Nog geen scans</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+''' + _FOOTER + '''
+<script>
+new Chart(document.getElementById('scanChart'),{
+  type:'bar',
+  data:{
+    labels:{{chart_labels|safe}},
+    datasets:[{label:'Scans',data:{{chart_values|safe}},
+      backgroundColor:'rgba(82,183,136,.35)',borderColor:'#40916C',borderWidth:2,borderRadius:4}]
+  },
+  options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#B7E4C733'},ticks:{color:'#4A5568',font:{family:'Poppins',size:11}}},x:{grid:{display:false},ticks:{color:'#4A5568',font:{family:'Poppins',size:11}}}}}
+});
+const devData=[{% for r in by_device %}{label:'{{r.device}}',n:{{r.n}}}{% if not loop.last %},{% endif %}{% endfor %}];
 if(devData.length){
-  new Chart(document.getElementById('deviceChart'), {
-    type: 'doughnut',
-    data: {
-      labels: devData.map(d=>d.label),
-      datasets: [{data:devData.map(d=>d.n),backgroundColor:['#0d6efd','#198754','#ffc107','#dc3545']}]
+  new Chart(document.getElementById('deviceChart'),{
+    type:'doughnut',
+    data:{
+      labels:devData.map(d=>d.label),
+      datasets:[{data:devData.map(d=>d.n),
+        backgroundColor:['#52B788','#2D6A4F','#74C69D','#B7E4C7'],
+        borderWidth:0}]
     },
-    options: {plugins:{legend:{position:'bottom'}}}
+    options:{plugins:{legend:{position:'bottom',labels:{font:{family:'Poppins',size:11},color:'#375e53'}}},cutout:'60%'}
   });
 }
 </script>
-{% endblock %}''').replace('{% block content %}{% endblock %}', '').replace('{% block scripts %}{% endblock %}', '')
+</body></html>'''
 
 # ─── Start ───────────────────────────────────────────────────────────────────
 
