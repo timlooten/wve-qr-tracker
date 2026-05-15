@@ -1,0 +1,17 @@
+[Unit]
+Description=QR Tracker WVE
+After=network.target
+
+[Service]
+User=michaelai
+WorkingDirectory=/home/michaelai/qr_tracker
+Environment=QR_BASE_URL=https://qr.wve.nl
+Environment=QR_ADMIN_PASSWORD=VERANDER_DIT
+Environment=QR_DB_PATH=/home/michaelai/qr_tracker/qr_tracker.db
+Environment=QR_PORT=5010
+ExecStart=/home/michaelai/qr_tracker/venv/bin/python qr_app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
