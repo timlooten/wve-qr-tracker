@@ -5,7 +5,7 @@ Redirect server + volledige scan tracking + admin dashboard
 Port: 5010 op Berry
 """
 
-import os, io, csv, json, secrets, sqlite3, hashlib, string, random
+import os, io, csv, json, secrets, sqlite3, hashlib, string, random, base64
 from datetime import datetime, timedelta
 from functools import wraps
 from collections import defaultdict
@@ -164,6 +164,15 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
+def make_qr_b64(url):
+    buf = make_qr_png(url)
+    return base64.b64encode(buf.read()).decode('utf-8')
+
+def trend(current, previous):
+    if previous == 0:
+        return None
+    return round((current - previous) / previous * 100)
+
 def make_qr_png(url, style='rounded'):
     qr = qrcode.QRCode(
         error_correction=qrcode.constants.ERROR_CORRECT_M,
@@ -246,15 +255,25 @@ def index():
 @login_required
 def dashboard():
     db = get_db()
-    today = datetime.now().strftime('%Y-%m-%d')
-    week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+    now       = datetime.now()
+    today     = now.strftime('%Y-%m-%d')
+    yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+    week_ago  = (now - timedelta(days=7)).strftime('%Y-%m-%d')
+    two_weeks = (now - timedelta(days=14)).strftime('%Y-%m-%d')
+
+    scans_today     = db.execute("SELECT COUNT(*) FROM scan_events WHERE scanned_at >= ?", (today,)).fetchone()[0]
+    scans_yesterday = db.execute("SELECT COUNT(*) FROM scan_events WHERE scanned_at >= ? AND scanned_at < ?", (yesterday, today)).fetchone()[0]
+    scans_week      = db.execute("SELECT COUNT(*) FROM scan_events WHERE scanned_at >= ?", (week_ago,)).fetchone()[0]
+    scans_prev_week = db.execute("SELECT COUNT(*) FROM scan_events WHERE scanned_at >= ? AND scanned_at < ?", (two_weeks, week_ago)).fetchone()[0]
 
     stats = {
-        'total_codes':  db.execute('SELECT COUNT(*) FROM qr_codes').fetchone()[0],
-        'active_codes': db.execute('SELECT COUNT(*) FROM qr_codes WHERE is_active=1').fetchone()[0],
-        'total_scans':  db.execute('SELECT COUNT(*) FROM scan_events').fetchone()[0],
-        'scans_today':  db.execute("SELECT COUNT(*) FROM scan_events WHERE scanned_at >= ?", (today,)).fetchone()[0],
-        'scans_week':   db.execute("SELECT COUNT(*) FROM scan_events WHERE scanned_at >= ?", (week_ago,)).fetchone()[0],
+        'total_codes':       db.execute('SELECT COUNT(*) FROM qr_codes').fetchone()[0],
+        'active_codes':      db.execute('SELECT COUNT(*) FROM qr_codes WHERE is_active=1').fetchone()[0],
+        'total_scans':       db.execute('SELECT COUNT(*) FROM scan_events').fetchone()[0],
+        'scans_today':       scans_today,
+        'scans_week':        scans_week,
+        'trend_today':       trend(scans_today, scans_yesterday),
+        'trend_week':        trend(scans_week, scans_prev_week),
     }
 
     top_codes = db.execute('''
@@ -273,20 +292,23 @@ def dashboard():
         ORDER BY s.scanned_at DESC LIMIT 15
     ''').fetchall()
 
-    # Scans per dag laatste 30 dagen
-    days_data = db.execute('''
-        SELECT substr(scanned_at,1,10) as dag, COUNT(*) as n
-        FROM scan_events
-        WHERE scanned_at >= date('now','-30 days')
-        GROUP BY dag ORDER BY dag
-    ''').fetchall()
-    chart_labels = [r['dag'] for r in days_data]
-    chart_values = [r['n'] for r in days_data]
+    def chart_data(days):
+        rows = db.execute('''
+            SELECT substr(scanned_at,1,10) as dag, COUNT(*) as n
+            FROM scan_events WHERE scanned_at >= date('now',?)
+            GROUP BY dag ORDER BY dag
+        ''', (f'-{days} days',)).fetchall()
+        return [r['dag'] for r in rows], [r['n'] for r in rows]
+
+    labels30, values30 = chart_data(30)
+    labels7,  values7  = chart_data(7)
 
     return render_template_string(DASHBOARD_TMPL,
         stats=stats, top_codes=top_codes, recent=recent,
-        chart_labels=json.dumps(chart_labels),
-        chart_values=json.dumps(chart_values),
+        chart_labels=json.dumps(labels30),
+        chart_values=json.dumps(values30),
+        chart_labels_7=json.dumps(labels7),
+        chart_values_7=json.dumps(values7),
     )
 
 # ─── Codes beheer ────────────────────────────────────────────────────────────
@@ -301,7 +323,7 @@ def codes_list():
         LEFT JOIN scan_events s ON s.code_id = q.id
         GROUP BY q.id ORDER BY q.created_at DESC
     ''').fetchall()
-    return render_template_string(CODES_TMPL, codes=codes, base_url=BASE_URL)
+    return render_template_string(CODES_TMPL, codes=codes, base_url=BASE_URL, BASE_URL=BASE_URL)
 
 @app.route('/admin/codes/new', methods=['GET', 'POST'])
 @login_required
@@ -371,12 +393,16 @@ def code_detail(code_id):
         GROUP BY city ORDER BY n DESC LIMIT 10
     ''', (code_id,)).fetchall()
 
-    days_data = db.execute('''
-        SELECT substr(scanned_at,1,10) as dag, COUNT(*) as n
-        FROM scan_events WHERE code_id=?
-        AND scanned_at >= date('now','-30 days')
-        GROUP BY dag ORDER BY dag
-    ''', (code_id,)).fetchall()
+    def detail_chart(days):
+        rows = db.execute('''
+            SELECT substr(scanned_at,1,10) as dag, COUNT(*) as n
+            FROM scan_events WHERE code_id=? AND scanned_at >= date('now',?)
+            GROUP BY dag ORDER BY dag
+        ''', (code_id, f'-{days} days')).fetchall()
+        return [r['dag'] for r in rows], [r['n'] for r in rows]
+
+    labels30, values30 = detail_chart(30)
+    labels7,  values7  = detail_chart(7)
 
     recent_scans = db.execute('''
         SELECT * FROM scan_events WHERE code_id=?
@@ -384,15 +410,18 @@ def code_detail(code_id):
     ''', (code_id,)).fetchall()
 
     scan_url = f"{BASE_URL}/c/{code_id}"
+    qr_b64   = make_qr_b64(scan_url)
 
     return render_template_string(CODE_DETAIL_TMPL,
-        code=code, scan_url=scan_url,
+        code=code, scan_url=scan_url, qr_b64=qr_b64,
         total_scans=total_scans, unique_ips=unique_ips,
         by_country=by_country, by_device=by_device,
         by_os=by_os, by_city=by_city,
         recent_scans=recent_scans,
-        chart_labels=json.dumps([r['dag'] for r in days_data]),
-        chart_values=json.dumps([r['n'] for r in days_data]),
+        chart_labels=json.dumps(labels30),
+        chart_values=json.dumps(values30),
+        chart_labels_7=json.dumps(labels7),
+        chart_values_7=json.dumps(values7),
     )
 
 @app.route('/admin/codes/<code_id>/toggle')
@@ -439,450 +468,709 @@ def code_export(code_id):
                     headers={'Content-Disposition': f'attachment; filename=scans_{code_id}.csv'})
 
 # ─── Templates ───────────────────────────────────────────────────────────────
-# Gedeelde stijl en layout
-_HEAD = '''<!DOCTYPE html>
-<html lang="nl">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>QR Tracker — WVE</title>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+
+# ── Gedeelde CSS ─────────────────────────────────────────────────────────────
+_CSS = '''
 <style>
 :root{
-  --wve-basis:#375e53;
-  --wve-primary:#2D6A4F;
-  --wve-accent:#40916C;
-  --wve-bright:#52B788;
-  --wve-light:#74C69D;
-  --wve-pale:#B7E4C7;
-  --wve-offwhite:#F5F9F7;
-  --wve-dark:#1B3A2D;
-  --wve-text:#1a2e26;
-  --wve-muted:#4A5568;
+  --wve-basis:#375e53;--wve-primary:#2D6A4F;--wve-accent:#40916C;
+  --wve-bright:#52B788;--wve-light:#74C69D;--wve-pale:#B7E4C7;
+  --wve-offwhite:#F5F9F7;--wve-dark:#1B3A2D;--wve-text:#1a2e26;--wve-muted:#4A5568;
 }
-*{font-family:'Poppins',sans-serif}
-body{background:#fff;color:var(--wve-text)}
+*{font-family:'Poppins',sans-serif;box-sizing:border-box}
+body{background:#fff;color:var(--wve-text);margin:0}
 /* Accent bar */
-.accent-bar{height:4px;background:var(--wve-basis);width:100%}
+.accent-bar{height:4px;background:var(--wve-basis);position:fixed;top:0;left:0;right:0;z-index:100}
 /* Sidebar */
-.sidebar{width:230px;min-height:calc(100vh - 4px);background:var(--wve-basis);display:flex;flex-direction:column}
-.sidebar .brand{color:#fff;font-weight:700;font-size:.95rem;padding:22px 20px 6px;letter-spacing:.02em}
-.sidebar .brand small{display:block;color:var(--wve-bright);font-size:.68rem;font-weight:400;letter-spacing:.08em;text-transform:uppercase;margin-top:2px}
-.sidebar a{color:#c0d9d3;text-decoration:none;padding:10px 20px;display:flex;align-items:center;font-size:.84rem;transition:all .15s;border-left:3px solid transparent}
-.sidebar a i{width:18px;text-align:center;margin-right:9px}
-.sidebar a:hover{background:rgba(82,183,136,.14);color:#fff;border-left-color:var(--wve-bright)}
-.sidebar .sidebar-footer{color:#7fa89f;font-size:.73rem;padding:16px 20px;border-top:1px solid rgba(82,183,136,.2);margin-top:auto}
-/* Main */
-.main{flex:1;padding:32px;background:#fff;max-width:100%}
-.page-title{font-size:1.15rem;font-weight:700;color:var(--wve-basis);margin-bottom:24px;display:flex;align-items:center;gap:10px}
+.sidebar{width:224px;min-height:100vh;background:var(--wve-basis);display:flex;flex-direction:column;flex-shrink:0;padding-top:4px}
+.sidebar .brand{padding:20px 20px 4px;color:#fff}
+.sidebar .brand-name{font-weight:700;font-size:.95rem;letter-spacing:.01em}
+.sidebar .brand-sub{font-size:.67rem;color:var(--wve-bright);letter-spacing:.09em;text-transform:uppercase;margin-top:1px}
+.sidebar nav{margin-top:12px;flex:1}
+.sidebar a{color:#b8d4cc;text-decoration:none;padding:9px 20px;display:flex;align-items:center;font-size:.83rem;transition:all .13s;border-left:3px solid transparent;gap:9px}
+.sidebar a i{width:16px;text-align:center;font-size:.9rem;opacity:.8}
+.sidebar a:hover{background:rgba(82,183,136,.13);color:#fff;border-left-color:rgba(82,183,136,.4)}
+.sidebar a.active{background:rgba(82,183,136,.18);color:#fff;border-left-color:var(--wve-bright);font-weight:500}
+.sidebar a.active i{opacity:1}
+.sidebar .nav-section{font-size:.67rem;color:rgba(255,255,255,.35);letter-spacing:.1em;text-transform:uppercase;padding:16px 20px 4px;font-weight:500}
+.sidebar .sidebar-footer{padding:14px 20px;border-top:1px solid rgba(82,183,136,.18);font-size:.72rem;color:rgba(255,255,255,.3);margin-top:auto}
+/* Layout */
+.layout{display:flex;min-height:100vh;padding-top:4px}
+.main{flex:1;padding:28px 32px;background:#fff;min-width:0;overflow-x:hidden}
+/* Page header */
+.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;gap:12px;flex-wrap:wrap}
+.page-title{font-size:1.1rem;font-weight:700;color:var(--wve-basis);display:flex;align-items:center;gap:8px;margin:0}
+.page-title i{font-size:1rem;color:var(--wve-accent)}
 /* Stat cards */
-.stat-card{background:var(--wve-offwhite);border-radius:10px;border:none;border-left:4px solid var(--wve-bright);box-shadow:0 2px 8px rgba(55,94,83,.08);padding:18px 20px}
-.stat-card .stat-label{font-size:.72rem;color:var(--wve-muted);text-transform:uppercase;letter-spacing:.07em;font-weight:500;margin-bottom:4px}
-.stat-card .stat-value{font-size:1.9rem;font-weight:700;color:var(--wve-basis);line-height:1.1}
-.stat-card .stat-value.green{color:var(--wve-accent)}
-.stat-card .stat-value.bright{color:var(--wve-bright)}
-/* Cards */
-.wve-card{background:var(--wve-offwhite);border-radius:10px;border:none;box-shadow:0 2px 8px rgba(55,94,83,.08)}
-.wve-card .card-header{background:transparent;border-bottom:1px solid var(--wve-pale);font-weight:600;color:var(--wve-basis);font-size:.85rem;padding:13px 18px;text-transform:uppercase;letter-spacing:.05em}
-.wve-card .card-body{padding:18px}
-.wve-card.p-0 .card-body{padding:0}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
+.stat-card{background:var(--wve-offwhite);border-radius:10px;border-left:4px solid var(--wve-bright);padding:16px 18px;box-shadow:0 1px 4px rgba(55,94,83,.07)}
+.stat-card.accent{border-left-color:var(--wve-accent)}
+.stat-card.dim{border-left-color:var(--wve-pale)}
+.stat-label{font-size:.7rem;color:var(--wve-muted);text-transform:uppercase;letter-spacing:.08em;font-weight:500;margin-bottom:5px}
+.stat-value{font-size:1.8rem;font-weight:700;color:var(--wve-basis);line-height:1}
+.stat-trend{font-size:.72rem;margin-top:5px;font-weight:500}
+.stat-trend.up{color:#2D6A4F}.stat-trend.down{color:#e53e3e}.stat-trend.neutral{color:var(--wve-muted)}
+/* WVE Card */
+.wve-card{background:var(--wve-offwhite);border-radius:10px;box-shadow:0 1px 5px rgba(55,94,83,.08);overflow:hidden;margin-bottom:20px}
+.wve-card-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--wve-pale)}
+.wve-card-title{font-size:.75rem;font-weight:600;color:var(--wve-basis);text-transform:uppercase;letter-spacing:.07em}
+.wve-card-body{padding:16px}
+.wve-card-body.p-0{padding:0}
 /* Table */
-.table{font-size:.83rem}
-.table thead th{color:var(--wve-basis);font-weight:600;font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid var(--wve-pale);background:var(--wve-offwhite);padding:10px 14px}
-.table td{vertical-align:middle;border-color:var(--wve-pale);padding:9px 14px;color:var(--wve-text)}
-.table-hover tbody tr:hover td{background:rgba(245,249,247,.9)}
+.wve-table{width:100%;border-collapse:collapse;font-size:.82rem}
+.wve-table th{font-size:.71rem;font-weight:600;color:var(--wve-basis);text-transform:uppercase;letter-spacing:.07em;padding:9px 14px;background:var(--wve-offwhite);border-bottom:2px solid var(--wve-pale);white-space:nowrap}
+.wve-table td{padding:9px 14px;border-bottom:1px solid rgba(183,228,199,.4);vertical-align:middle;color:var(--wve-text)}
+.wve-table tbody tr:last-child td{border-bottom:none}
+.wve-table tbody tr:hover td{background:rgba(245,249,247,.8)}
 /* Buttons */
-.btn-wve{background:var(--wve-accent);color:#fff;border:none;border-radius:7px;font-size:.82rem;font-weight:500;padding:8px 16px;transition:background .15s}
+.btn-wve{display:inline-flex;align-items:center;gap:5px;background:var(--wve-accent);color:#fff;border:none;border-radius:7px;font-size:.82rem;font-weight:500;padding:8px 15px;cursor:pointer;text-decoration:none;transition:background .13s;white-space:nowrap}
 .btn-wve:hover{background:var(--wve-primary);color:#fff}
-.btn-wve-sm{padding:5px 12px;font-size:.78rem}
-.btn-wve-outline{border:1.5px solid var(--wve-accent);color:var(--wve-accent);background:transparent;border-radius:7px;font-size:.82rem;padding:7px 14px;transition:all .15s}
-.btn-wve-outline:hover{background:var(--wve-offwhite);color:var(--wve-primary);border-color:var(--wve-primary)}
+.btn-wve.sm{padding:5px 11px;font-size:.77rem}
+.btn-outline{display:inline-flex;align-items:center;gap:5px;border:1.5px solid var(--wve-pale);color:var(--wve-muted);background:transparent;border-radius:7px;font-size:.82rem;padding:7px 13px;cursor:pointer;text-decoration:none;transition:all .13s;white-space:nowrap}
+.btn-outline:hover{border-color:var(--wve-accent);color:var(--wve-accent);background:rgba(82,183,136,.05)}
+.btn-outline.sm{padding:4px 10px;font-size:.77rem}
+.btn-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:6px;border:1.5px solid var(--wve-pale);color:var(--wve-muted);background:transparent;cursor:pointer;text-decoration:none;transition:all .13s;font-size:.85rem}
+.btn-icon:hover{border-color:var(--wve-accent);color:var(--wve-accent);background:rgba(82,183,136,.06)}
 /* Badges */
-.dev-badge{font-size:.72rem;padding:3px 10px;border-radius:20px;font-weight:500}
-.dev-mobiel{background:var(--wve-bright);color:#fff}
-.dev-tablet{background:var(--wve-light);color:#fff}
-.dev-desktop{background:var(--wve-primary);color:#fff}
-.dev-onbekend{background:#e2e8f0;color:#4A5568}
-/* Links */
-a{color:var(--wve-accent)}
-a:hover{color:var(--wve-primary)}
-/* Code */
-code{color:var(--wve-primary);background:var(--wve-offwhite);padding:2px 6px;border-radius:4px;font-size:.83em}
-/* Alert */
-.alert-info{background:var(--wve-offwhite);border-color:var(--wve-pale);color:var(--wve-basis)}
+.badge{display:inline-block;font-size:.7rem;padding:3px 9px;border-radius:20px;font-weight:500;white-space:nowrap}
+.badge-active{background:rgba(82,183,136,.18);color:#2D6A4F}
+.badge-inactive{background:#f1f5f9;color:#94a3b8}
+.badge-mobiel{background:rgba(82,183,136,.2);color:#2D6A4F}
+.badge-tablet{background:rgba(116,198,157,.2);color:#375e53}
+.badge-desktop{background:rgba(45,106,79,.15);color:#2D6A4F}
+.badge-onbekend{background:#f1f5f9;color:#94a3b8}
 /* Forms */
-.form-label{font-weight:500;font-size:.85rem;color:var(--wve-basis)}
-.form-control:focus{border-color:var(--wve-bright);box-shadow:0 0 0 .2rem rgba(82,183,136,.2)}
-.form-text{font-size:.77rem;color:var(--wve-muted)}
-/* Separator */
-hr{border-color:var(--wve-pale);opacity:1}
-</style>
-</head>'''
+.form-group{margin-bottom:18px}
+.form-label{display:block;font-size:.83rem;font-weight:500;color:var(--wve-basis);margin-bottom:5px}
+.form-label .req{color:#e53e3e;margin-left:2px}
+.form-label .opt{font-weight:400;color:var(--wve-muted);font-size:.77rem}
+.form-control{width:100%;border:1.5px solid #dde5e0;border-radius:7px;padding:8px 12px;font-size:.84rem;color:var(--wve-text);background:#fff;transition:border .13s;outline:none}
+.form-control:focus{border-color:var(--wve-bright);box-shadow:0 0 0 3px rgba(82,183,136,.12)}
+.form-hint{font-size:.75rem;color:var(--wve-muted);margin-top:4px}
+.input-prefix{display:flex;align-items:center}
+.input-prefix-text{background:var(--wve-offwhite);border:1.5px solid #dde5e0;border-right:none;border-radius:7px 0 0 7px;padding:8px 11px;font-size:.8rem;color:var(--wve-muted);white-space:nowrap}
+.input-prefix .form-control{border-radius:0 7px 7px 0}
+/* Search */
+.search-box{position:relative;max-width:280px}
+.search-box i{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--wve-muted);font-size:.85rem;pointer-events:none}
+.search-box input{padding-left:30px;width:100%}
+/* Copy button */
+.copy-wrap{display:inline-flex;align-items:center;gap:6px}
+.copy-wrap code{font-size:.8rem;background:rgba(55,94,83,.07);color:var(--wve-primary);padding:3px 8px;border-radius:5px}
+/* Chart toolbar */
+.chart-toolbar{display:flex;gap:4px}
+.chart-btn{font-size:.72rem;padding:4px 10px;border-radius:5px;border:1.5px solid var(--wve-pale);color:var(--wve-muted);background:transparent;cursor:pointer;font-family:'Poppins',sans-serif;transition:all .12s}
+.chart-btn.active{background:var(--wve-accent);color:#fff;border-color:var(--wve-accent)}
+/* Toast */
+.toast-container{position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.wve-toast{background:#fff;border-radius:9px;box-shadow:0 4px 20px rgba(55,94,83,.15);padding:12px 16px;border-left:4px solid var(--wve-bright);font-size:.83rem;color:var(--wve-text);display:flex;align-items:center;gap:10px;animation:slideIn .2s ease;min-width:260px}
+@keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+/* QR preview */
+.qr-preview{background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 5px rgba(55,94,83,.1);display:inline-block}
+.qr-preview img{display:block;width:180px;height:180px}
+/* Empty state */
+.empty-state{text-align:center;padding:48px 20px;color:var(--wve-muted)}
+.empty-state i{font-size:2.5rem;color:var(--wve-pale);display:block;margin-bottom:12px}
+.empty-state p{font-size:.9rem;margin-bottom:16px}
+/* Misc */
+a{color:var(--wve-accent);text-decoration:none}
+a:hover{color:var(--wve-primary)}
+code{font-size:.82em;background:rgba(55,94,83,.07);color:var(--wve-primary);padding:2px 6px;border-radius:4px}
+hr{border:none;border-top:1px solid var(--wve-pale);margin:16px 0}
+.text-muted{color:var(--wve-muted) !important}
+.truncate{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+@media(max-width:900px){.stats-row{grid-template-columns:repeat(2,1fr)}.sidebar{width:52px}.sidebar .brand-name,.sidebar .brand-sub,.sidebar a span,.sidebar .nav-section,.sidebar .sidebar-footer{display:none}.sidebar a{padding:12px;justify-content:center}}
+</style>'''
 
-_SIDEBAR = '''<div class="accent-bar"></div>
-<div class="d-flex">
+# ── HTML head ─────────────────────────────────────────────────────────────────
+_HEAD = (
+    '<!DOCTYPE html><html lang="nl"><head>'
+    '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<title>QR Tracker — WVE</title>'
+    '<link href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">'
+    '<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">'
+    + _CSS +
+    '</head>'
+)
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+_NAV = '''
 <div class="sidebar">
-  <div class="brand">QR Tracker<small>Wij Vergelijken Energie</small></div>
-  <a href="/admin"><i class="bi bi-speedometer2"></i>Dashboard</a>
-  <a href="/admin/codes"><i class="bi bi-qr-code"></i>QR Codes</a>
-  <a href="/admin/codes/new"><i class="bi bi-plus-circle"></i>Nieuwe code</a>
-  <div class="sidebar-footer">qr.wve.nl</div>
+  <div class="brand">
+    <div class="brand-name">QR Tracker</div>
+    <div class="brand-sub">Wij Vergelijken Energie</div>
+  </div>
+  <nav>
+    <div class="nav-section">Beheer</div>
+    <a href="/admin" class="{{ 'active' if request.path == '/admin' else '' }}">
+      <i class="bi bi-speedometer2"></i><span>Dashboard</span>
+    </a>
+    <a href="/admin/codes" class="{{ 'active' if request.path.startswith('/admin/codes') and 'new' not in request.path else '' }}">
+      <i class="bi bi-qr-code"></i><span>QR Codes</span>
+    </a>
+    <a href="/admin/codes/new" class="{{ 'active' if 'new' in request.path else '' }}">
+      <i class="bi bi-plus-circle"></i><span>Nieuwe code</span>
+    </a>
+  </nav>
+  <div class="sidebar-footer">
+    <a href="/logout" style="color:rgba(255,255,255,.35);font-size:.75rem;display:flex;align-items:center;gap:6px">
+      <i class="bi bi-box-arrow-left"></i><span>Uitloggen</span>
+    </a>
+  </div>
+</div>'''
+
+# ── Shared footer scripts ─────────────────────────────────────────────────────
+_SCRIPTS = '''
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+// Copy to clipboard
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(function() {
+    var orig = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-check2"></i>';
+    btn.style.color = '#40916C';
+    showToast('Gekopieerd naar klembord');
+    setTimeout(function(){btn.innerHTML=orig;btn.style.color='';}, 1800);
+  });
+}
+// Toast
+function showToast(msg) {
+  var c = document.getElementById('toast-container');
+  if(!c){c=document.createElement('div');c.id='toast-container';c.className='toast-container';document.body.appendChild(c);}
+  var t = document.createElement('div');
+  t.className = 'wve-toast';
+  t.innerHTML = '<i class="bi bi-check-circle-fill" style="color:#52B788"></i>' + msg;
+  c.appendChild(t);
+  setTimeout(function(){t.style.opacity='0';t.style.transition='opacity .3s';setTimeout(function(){t.remove()},300)}, 2500);
+}
+// Chart defaults
+if(typeof Chart !== 'undefined'){
+  Chart.defaults.font.family = 'Poppins';
+  Chart.defaults.color = '#4A5568';
+}
+// Flash als toast
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('.flash-msg').forEach(function(el){
+    showToast(el.textContent);
+    el.remove();
+  });
+});
+</script>'''
+
+def _page(content, scripts=''):
+    """Bouw een volledige pagina met sidebar."""
+    return (
+        _HEAD + '<body>'
+        '<div class="layout">'
+        + _NAV +
+        '<div class="main">'
+        '{% with msgs = get_flashed_messages() %}'
+        '{% if msgs %}{% for m in msgs %}<span class="flash-msg" style="display:none">{{m}}</span>{% endfor %}{% endif %}'
+        '{% endwith %}'
+        + content +
+        '</div></div>'
+        + _SCRIPTS + scripts +
+        '</body></html>'
+    )
+
+# ── Chart helper (gedeeld) ────────────────────────────────────────────────────
+_CHART_JS = '''
+function makeBarChart(id, labels, data) {
+  return new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: data,
+        backgroundColor: 'rgba(82,183,136,.3)',
+        borderColor: '#40916C',
+        borderWidth: 2,
+        borderRadius: 4,
+        hoverBackgroundColor: 'rgba(64,145,108,.45)',
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, grid: { color: '#B7E4C722' }, ticks: { precision: 0 } },
+        x: { grid: { display: false } }
+      }
+    }
+  });
+}
+'''
+
+# ── LOGIN ─────────────────────────────────────────────────────────────────────
+LOGIN_TMPL = (
+    _HEAD +
+    '<body style="background:var(--wve-offwhite);min-height:100vh;display:flex;align-items:center;justify-content:center">'
+    '<div style="width:100%;max-width:380px;padding:24px">'
+    '  <div style="text-align:center;margin-bottom:28px">'
+    '    <div style="width:48px;height:48px;background:var(--wve-basis);border-radius:12px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:14px">'
+    '      <i class="bi bi-qr-code-scan" style="color:#fff;font-size:1.3rem"></i>'
+    '    </div>'
+    '    <div style="font-size:1.1rem;font-weight:700;color:var(--wve-basis)">QR Tracker</div>'
+    '    <div style="font-size:.73rem;color:var(--wve-muted);text-transform:uppercase;letter-spacing:.09em;margin-top:2px">Wij Vergelijken Energie</div>'
+    '  </div>'
+    '  <div class="wve-card"><div class="wve-card-body">'
+    '    {% if error %}<div style="background:#fff0f0;border:1px solid #fca5a5;border-radius:7px;padding:10px 12px;font-size:.82rem;color:#b91c1c;margin-bottom:14px">{{error}}</div>{% endif %}'
+    '    <form method="post">'
+    '      <div class="form-group"><label class="form-label">Wachtwoord</label>'
+    '        <input type="password" name="password" class="form-control" placeholder="Voer wachtwoord in" autofocus required>'
+    '      </div>'
+    '      <button class="btn-wve" style="width:100%;justify-content:center;padding:10px" type="submit">Inloggen</button>'
+    '    </form>'
+    '  </div></div>'
+    '</div>'
+    + _SCRIPTS +
+    '</body></html>'
+)
+
+# ── DASHBOARD ─────────────────────────────────────────────────────────────────
+DASHBOARD_TMPL = _page('''
+<div class="page-header">
+  <h1 class="page-title"><i class="bi bi-speedometer2"></i>Dashboard</h1>
 </div>
-<div class="main">
-{% with msgs = get_flashed_messages() %}
-{% if msgs %}{% for m in msgs %}
-<div class="alert alert-info alert-dismissible fade show py-2 mb-3" style="font-size:.84rem">{{m}}
-<button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button></div>
-{% endfor %}{% endif %}
-{% endwith %}'''
 
-_FOOTER = '''</div></div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>'''
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="stat-label">Totaal scans</div>
+    <div class="stat-value">{{stats.total_scans}}</div>
+    <div class="stat-trend neutral">alle tijd</div>
+  </div>
+  <div class="stat-card accent">
+    <div class="stat-label">Vandaag</div>
+    <div class="stat-value">{{stats.scans_today}}</div>
+    <div class="stat-trend {% if stats.trend_today is not none %}{% if stats.trend_today >= 0 %}up{% else %}down{% endif %}{% else %}neutral{% endif %}">
+      {% if stats.trend_today is not none %}
+        {% if stats.trend_today >= 0 %}<i class="bi bi-arrow-up-short"></i>+{{stats.trend_today}}%{% else %}<i class="bi bi-arrow-down-short"></i>{{stats.trend_today}}%{% endif %}
+        vs gisteren
+      {% else %}geen vergelijking{% endif %}
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Deze week</div>
+    <div class="stat-value">{{stats.scans_week}}</div>
+    <div class="stat-trend {% if stats.trend_week is not none %}{% if stats.trend_week >= 0 %}up{% else %}down{% endif %}{% else %}neutral{% endif %}">
+      {% if stats.trend_week is not none %}
+        {% if stats.trend_week >= 0 %}<i class="bi bi-arrow-up-short"></i>+{{stats.trend_week}}%{% else %}<i class="bi bi-arrow-down-short"></i>{{stats.trend_week}}%{% endif %}
+        vs vorige week
+      {% else %}geen vergelijking{% endif %}
+    </div>
+  </div>
+  <div class="stat-card dim">
+    <div class="stat-label">Actieve codes</div>
+    <div class="stat-value">{{stats.active_codes}}</div>
+    <div class="stat-trend neutral">van {{stats.total_codes}} totaal</div>
+  </div>
+</div>
 
-LOGIN_TMPL = _HEAD + '''
-<body style="background:var(--wve-offwhite);min-height:100vh;display:flex;align-items:center;justify-content:center">
-<div class="accent-bar" style="position:fixed;top:0;left:0;right:0"></div>
-<div style="width:100%;max-width:380px;padding:20px">
-  <div style="text-align:center;margin-bottom:28px">
-    <div style="font-size:1.1rem;font-weight:700;color:var(--wve-basis)">QR Tracker</div>
-    <div style="font-size:.75rem;color:var(--wve-muted);text-transform:uppercase;letter-spacing:.08em">Wij Vergelijken Energie</div>
+<div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-bottom:20px">
+  <div class="wve-card">
+    <div class="wve-card-header">
+      <span class="wve-card-title">Scans over tijd</span>
+      <div class="chart-toolbar">
+        <button class="chart-btn active" onclick="switchRange(this,7)" data-range="7">7d</button>
+        <button class="chart-btn" onclick="switchRange(this,30)" data-range="30">30d</button>
+      </div>
+    </div>
+    <div class="wve-card-body"><canvas id="scanChart" height="120"></canvas></div>
   </div>
   <div class="wve-card">
-    <div class="card-body p-4">
-      {% if error %}
-      <div class="alert alert-danger py-2 mb-3" style="font-size:.83rem">{{error}}</div>
-      {% endif %}
-      <form method="post">
-        <div class="mb-3">
-          <label class="form-label">Wachtwoord</label>
-          <input type="password" name="password" class="form-control" autofocus required>
-        </div>
-        <button class="btn-wve w-100" style="padding:10px">Inloggen</button>
-      </form>
-    </div>
-  </div>
-</div>
-</body></html>'''
-
-DASHBOARD_TMPL = _HEAD + '<body>' + _SIDEBAR + '''
-<div class="page-title"><i class="bi bi-speedometer2"></i>Dashboard</div>
-
-<div class="row g-3 mb-4">
-  <div class="col-sm-6 col-lg-3">
-    <div class="stat-card">
-      <div class="stat-label">Totaal scans</div>
-      <div class="stat-value">{{stats.total_scans}}</div>
-    </div>
-  </div>
-  <div class="col-sm-6 col-lg-3">
-    <div class="stat-card">
-      <div class="stat-label">Vandaag</div>
-      <div class="stat-value green">{{stats.scans_today}}</div>
-    </div>
-  </div>
-  <div class="col-sm-6 col-lg-3">
-    <div class="stat-card">
-      <div class="stat-label">Deze week</div>
-      <div class="stat-value bright">{{stats.scans_week}}</div>
-    </div>
-  </div>
-  <div class="col-sm-6 col-lg-3">
-    <div class="stat-card">
-      <div class="stat-label">Actieve codes</div>
-      <div class="stat-value">{{stats.active_codes}}<span style="font-size:1rem;color:var(--wve-muted);font-weight:400"> / {{stats.total_codes}}</span></div>
-    </div>
-  </div>
-</div>
-
-<div class="row g-3 mb-4">
-  <div class="col-lg-8">
-    <div class="wve-card">
-      <div class="card-header">Scans per dag — 30 dagen</div>
-      <div class="card-body"><canvas id="scanChart" height="110"></canvas></div>
-    </div>
-  </div>
-  <div class="col-lg-4">
-    <div class="wve-card h-100">
-      <div class="card-header">Top codes</div>
-      <table class="table mb-0">
+    <div class="wve-card-header"><span class="wve-card-title">Top codes</span></div>
+    <div class="wve-card-body p-0">
+      {% if top_codes %}
+      <table class="wve-table">
         {% for c in top_codes %}
         <tr>
           <td><a href="/admin/codes/{{c.id}}">{{c.name}}</a></td>
-          <td class="text-end fw-600" style="color:var(--wve-accent);font-weight:600">{{c.scan_count}}</td>
+          <td style="text-align:right;font-weight:600;color:var(--wve-accent);width:50px">{{c.scan_count}}</td>
         </tr>
         {% endfor %}
-        {% if not top_codes %}<tr><td colspan="2" class="text-center py-4" style="color:var(--wve-muted)">Geen codes</td></tr>{% endif %}
       </table>
-    </div>
-  </div>
-</div>
-
-<div class="wve-card">
-  <div class="card-header">Recente scans</div>
-  <table class="table mb-0">
-    <thead>
-      <tr><th>Tijdstip</th><th>Code</th><th>Land</th><th>Stad</th><th>Apparaat</th><th>Browser</th></tr>
-    </thead>
-    <tbody>
-      {% for s in recent %}
-      <tr>
-        <td style="color:var(--wve-muted)">{{s.scanned_at}}</td>
-        <td><a href="/admin/codes/{{s.code_id}}">{{s.code_name}}</a></td>
-        <td>{{s.country or '—'}}</td>
-        <td>{{s.city or '—'}}</td>
-        <td><span class="dev-badge dev-{{s.device or 'onbekend'}}">{{s.device or '?'}}</span></td>
-        <td style="color:var(--wve-muted)">{{s.browser or '—'}}</td>
-      </tr>
-      {% endfor %}
-      {% if not recent %}<tr><td colspan="6" class="text-center py-4" style="color:var(--wve-muted)">Nog geen scans</td></tr>{% endif %}
-    </tbody>
-  </table>
-</div>
-
-''' + _FOOTER + '''
-<script>
-new Chart(document.getElementById('scanChart'),{
-  type:'bar',
-  data:{
-    labels:{{chart_labels|safe}},
-    datasets:[{label:'Scans',data:{{chart_values|safe}},
-      backgroundColor:'rgba(82,183,136,.35)',borderColor:'#40916C',borderWidth:2,borderRadius:4}]
-  },
-  options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#B7E4C733'},ticks:{color:'#4A5568',font:{family:'Poppins',size:11}}},x:{grid:{display:false},ticks:{color:'#4A5568',font:{family:'Poppins',size:11}}}}}
-});
-</script>
-</body></html>'''
-
-CODES_TMPL = _HEAD + '<body>' + _SIDEBAR + '''
-<div class="d-flex justify-content-between align-items-center mb-4">
-  <div class="page-title mb-0"><i class="bi bi-qr-code"></i>QR Codes</div>
-  <a href="/admin/codes/new" class="btn-wve btn-wve-sm"><i class="bi bi-plus-circle me-1"></i>Nieuwe code</a>
-</div>
-
-<div class="wve-card">
-  <table class="table table-hover mb-0">
-    <thead>
-      <tr><th>Naam</th><th>Code</th><th>Campagne</th><th>Bestemming</th><th>Scans</th><th>Laatste scan</th><th>Status</th><th></th></tr>
-    </thead>
-    <tbody>
-      {% for c in codes %}
-      <tr>
-        <td><a href="/admin/codes/{{c.id}}">{{c.name}}</a></td>
-        <td><code>{{c.id}}</code></td>
-        <td style="color:var(--wve-muted)">{{c.campaign or '—'}}</td>
-        <td class="text-truncate" style="max-width:180px;color:var(--wve-muted)">{{c.destination}}</td>
-        <td style="font-weight:600;color:var(--wve-accent)">{{c.scan_count}}</td>
-        <td style="color:var(--wve-muted)">{{c.last_scan or '—'}}</td>
-        <td>
-          {% if c.is_active %}
-            <span class="dev-badge" style="background:var(--wve-bright);color:#fff">actief</span>
-          {% else %}
-            <span class="dev-badge" style="background:#e2e8f0;color:#4A5568">uit</span>
-          {% endif %}
-        </td>
-        <td>
-          <a href="/admin/codes/{{c.id}}/qr.png" class="btn-wve-outline btn-wve-sm me-1" title="Download QR"><i class="bi bi-download"></i></a>
-          <a href="/admin/codes/{{c.id}}/toggle" class="btn-wve-outline btn-wve-sm" title="Toggle"><i class="bi bi-toggle-on"></i></a>
-        </td>
-      </tr>
-      {% endfor %}
-      {% if not codes %}
-      <tr><td colspan="8" class="text-center py-5" style="color:var(--wve-muted)">Nog geen QR codes — <a href="/admin/codes/new">maak er een aan</a></td></tr>
+      {% else %}
+      <div class="empty-state" style="padding:24px"><i class="bi bi-qr-code"></i><p>Nog geen codes</p><a href="/admin/codes/new" class="btn-wve sm">Maak eerste code</a></div>
       {% endif %}
-    </tbody>
-  </table>
-</div>
-''' + _FOOTER + '</body></html>'
-
-CODE_NEW_TMPL = _HEAD + '<body>' + _SIDEBAR + '''
-<div class="page-title"><i class="bi bi-plus-circle"></i>Nieuwe QR code</div>
-
-<div class="wve-card" style="max-width:560px">
-  <div class="card-body">
-    <form method="post">
-      <div class="mb-3">
-        <label class="form-label">Naam <span style="color:#e53e3e">*</span></label>
-        <input type="text" name="name" class="form-control" placeholder="Bv. Poster kantoor Amsterdam" required>
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Bestemmings-URL <span style="color:#e53e3e">*</span></label>
-        <input type="text" name="destination" class="form-control" placeholder="https://www.wve.nl" required>
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Campagne</label>
-        <input type="text" name="campaign" class="form-control" placeholder="Bv. zomer2025, poster-nijmegen">
-        <div class="form-text">Gebruik dit om codes te groeperen per actie of locatie</div>
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Aangepaste code <span style="color:var(--wve-muted);font-weight:400">(optioneel)</span></label>
-        <div class="input-group">
-          <span class="input-group-text" style="font-size:.8rem;color:var(--wve-muted);background:var(--wve-offwhite)">/c/</span>
-          <input type="text" name="custom_id" class="form-control" placeholder="poster-amsterdam  —  leeg = automatisch">
-        </div>
-      </div>
-      <div class="mb-4">
-        <label class="form-label">Notities</label>
-        <textarea name="notes" class="form-control" rows="2" placeholder="Locatie, drukker, formaat..."></textarea>
-      </div>
-      <div class="d-flex gap-2">
-        <button type="submit" class="btn-wve"><i class="bi bi-qr-code me-1"></i>Aanmaken</button>
-        <a href="/admin/codes" class="btn-wve-outline">Annuleer</a>
-      </div>
-    </form>
-  </div>
-</div>
-''' + _FOOTER + '</body></html>'
-
-CODE_DETAIL_TMPL = _HEAD + '<body>' + _SIDEBAR + '''
-<div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-3">
-  <div>
-    <div class="page-title mb-1"><i class="bi bi-bar-chart-line"></i>{{code.name}}</div>
-    <div style="font-size:.82rem;color:var(--wve-muted)">
-      <code>{{scan_url}}</code>
-      {% if code.campaign %} &nbsp;·&nbsp; campagne: <strong style="color:var(--wve-basis)">{{code.campaign}}</strong>{% endif %}
     </div>
-    {% if code.notes %}<div style="font-size:.8rem;color:var(--wve-muted);margin-top:4px">{{code.notes}}</div>{% endif %}
   </div>
-  <div class="d-flex gap-2 flex-wrap">
-    <a href="/admin/codes/{{code.id}}/qr.png" class="btn-wve btn-wve-sm"><i class="bi bi-download me-1"></i>Download QR</a>
-    <a href="/admin/codes/{{code.id}}/export" class="btn-wve-outline btn-wve-sm"><i class="bi bi-filetype-csv me-1"></i>Export CSV</a>
-    <a href="/admin/codes/{{code.id}}/toggle" class="btn-wve-outline btn-wve-sm">
+</div>
+
+<div class="wve-card">
+  <div class="wve-card-header">
+    <span class="wve-card-title">Recente scans</span>
+    <a href="/admin/codes" class="btn-outline sm">Alle codes</a>
+  </div>
+  <div class="wve-card-body p-0">
+    {% if recent %}
+    <table class="wve-table">
+      <thead><tr><th>Tijdstip</th><th>Code</th><th>Land</th><th>Stad</th><th>ISP</th><th>Apparaat</th><th>Browser</th></tr></thead>
+      <tbody>
+        {% for s in recent %}
+        <tr>
+          <td style="color:var(--wve-muted);white-space:nowrap">{{s.scanned_at}}</td>
+          <td><a href="/admin/codes/{{s.code_id}}">{{s.code_name}}</a></td>
+          <td>{{s.country or '—'}}</td>
+          <td>{{s.city or '—'}}</td>
+          <td style="color:var(--wve-muted)" class="truncate">{{s.isp or '—'}}</td>
+          <td><span class="badge badge-{{s.device or 'onbekend'}}">{{s.device or '?'}}</span></td>
+          <td style="color:var(--wve-muted)" class="truncate">{{s.browser or '—'}}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state"><i class="bi bi-cursor"></i><p>Nog geen scans ontvangen</p></div>
+    {% endif %}
+  </div>
+</div>
+''', '''
+<script>
+''' + _CHART_JS + '''
+var allLabels7  = {{chart_labels_7|safe}};
+var allValues7  = {{chart_values_7|safe}};
+var allLabels30 = {{chart_labels|safe}};
+var allValues30 = {{chart_values|safe}};
+var scanChart = makeBarChart('scanChart', allLabels7, allValues7);
+function switchRange(btn, days) {
+  document.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  var labels = days === 7 ? allLabels7 : allLabels30;
+  var values = days === 7 ? allValues7 : allValues30;
+  scanChart.data.labels = labels;
+  scanChart.data.datasets[0].data = values;
+  scanChart.update();
+}
+</script>
+''')
+
+# ── CODES LIST ────────────────────────────────────────────────────────────────
+CODES_TMPL = _page('''
+<div class="page-header">
+  <h1 class="page-title"><i class="bi bi-qr-code"></i>QR Codes</h1>
+  <a href="/admin/codes/new" class="btn-wve"><i class="bi bi-plus-circle"></i>Nieuwe code</a>
+</div>
+
+<div class="wve-card">
+  <div class="wve-card-header">
+    <span class="wve-card-title">{{codes|length}} code{% if codes|length != 1 %}s{% endif %}</span>
+    <div class="search-box">
+      <i class="bi bi-search"></i>
+      <input type="text" class="form-control" id="searchInput" placeholder="Zoeken..." oninput="filterCodes(this.value)" style="font-size:.82rem;padding:6px 10px 6px 30px">
+    </div>
+  </div>
+  <div class="wve-card-body p-0">
+    {% if codes %}
+    <table class="wve-table" id="codesTable">
+      <thead><tr><th>Naam</th><th>Scan URL</th><th>Campagne</th><th>Scans</th><th>Laatste scan</th><th>Status</th><th style="width:90px"></th></tr></thead>
+      <tbody>
+        {% for c in codes %}
+        <tr data-search="{{ c.name|lower }} {{ c.id|lower }} {{ (c.campaign or '')|lower }}">
+          <td>
+            <a href="/admin/codes/{{c.id}}" style="font-weight:500">{{c.name}}</a>
+            {% if c.notes %}<div style="font-size:.73rem;color:var(--wve-muted);margin-top:1px">{{c.notes[:60]}}</div>{% endif %}
+          </td>
+          <td>
+            <div class="copy-wrap">
+              <code>{{base_url}}/c/{{c.id}}</code>
+              <button class="btn-icon" onclick="copyText('{{base_url}}/c/{{c.id}}', this)" title="Kopieer URL"><i class="bi bi-clipboard"></i></button>
+            </div>
+          </td>
+          <td style="color:var(--wve-muted)">{{c.campaign or '—'}}</td>
+          <td style="font-weight:600;color:var(--wve-accent)">{{c.scan_count}}</td>
+          <td style="color:var(--wve-muted);white-space:nowrap;font-size:.79rem">{{c.last_scan or '—'}}</td>
+          <td>
+            {% if c.is_active %}<span class="badge badge-active">actief</span>
+            {% else %}<span class="badge badge-inactive">uit</span>{% endif %}
+          </td>
+          <td>
+            <div style="display:flex;gap:5px">
+              <a href="/admin/codes/{{c.id}}" class="btn-icon" title="Statistieken"><i class="bi bi-bar-chart-line"></i></a>
+              <a href="/admin/codes/{{c.id}}/qr.png" class="btn-icon" title="Download QR"><i class="bi bi-download"></i></a>
+              <a href="/admin/codes/{{c.id}}/toggle" class="btn-icon" title="{% if c.is_active %}Deactiveer{% else %}Activeer{% endif %}">
+                <i class="bi bi-toggle-{% if c.is_active %}on{% else %}off{% endif %}"></i>
+              </a>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div id="noResults" style="display:none" class="empty-state"><i class="bi bi-search"></i><p>Geen codes gevonden</p></div>
+    {% else %}
+    <div class="empty-state">
+      <i class="bi bi-qr-code"></i>
+      <p>Nog geen QR codes aangemaakt</p>
+      <a href="/admin/codes/new" class="btn-wve">Maak eerste code aan</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+''', '''
+<script>
+function filterCodes(q) {
+  q = q.toLowerCase().trim();
+  var rows = document.querySelectorAll('#codesTable tbody tr[data-search]');
+  var visible = 0;
+  rows.forEach(function(r){
+    var match = !q || r.dataset.search.includes(q);
+    r.style.display = match ? '' : 'none';
+    if(match) visible++;
+  });
+  document.getElementById('noResults').style.display = (q && visible === 0) ? '' : 'none';
+}
+</script>
+''')
+
+# ── NIEUWE CODE ───────────────────────────────────────────────────────────────
+CODE_NEW_TMPL = _page('''
+<div class="page-header">
+  <h1 class="page-title"><i class="bi bi-plus-circle"></i>Nieuwe QR code</h1>
+  <a href="/admin/codes" class="btn-outline"><i class="bi bi-arrow-left"></i>Terug</a>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start">
+  <div class="wve-card">
+    <div class="wve-card-header"><span class="wve-card-title">Code aanmaken</span></div>
+    <div class="wve-card-body">
+      <form method="post" id="codeForm">
+        <div class="form-group">
+          <label class="form-label">Naam <span class="req">*</span></label>
+          <input type="text" name="name" class="form-control" placeholder="Poster Nijmegen Centrum" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bestemmings-URL <span class="req">*</span></label>
+          <input type="text" name="destination" id="destInput" class="form-control" placeholder="https://www.wve.nl" required oninput="updatePreview()">
+          <div class="form-hint">Waar komt de bezoeker terecht na het scannen?</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Campagne <span class="opt">(optioneel)</span></label>
+          <input type="text" name="campaign" class="form-control" placeholder="zomer2025, poster-nijmegen">
+          <div class="form-hint">Groepeer codes per actie of locatie</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Eigen code-ID <span class="opt">(optioneel)</span></label>
+          <div class="input-prefix">
+            <span class="input-prefix-text">/c/</span>
+            <input type="text" name="custom_id" id="codeIdInput" class="form-control" placeholder="poster-nijmegen-2025" oninput="updatePreview()">
+          </div>
+          <div class="form-hint">Leeg = automatisch gegenereerd. Gebruik alleen letters, cijfers en koppeltekens.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notities <span class="opt">(optioneel)</span></label>
+          <textarea name="notes" class="form-control" rows="2" placeholder="Locatie, formaat, drukker, ophangdatum..."></textarea>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:8px">
+          <button type="submit" class="btn-wve"><i class="bi bi-qr-code"></i>Code aanmaken</button>
+          <a href="/admin/codes" class="btn-outline">Annuleer</a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div>
+    <div class="wve-card">
+      <div class="wve-card-header"><span class="wve-card-title">Scan URL preview</span></div>
+      <div class="wve-card-body" style="text-align:center">
+        <div class="qr-preview" style="margin:0 auto 14px">
+          <img src="" id="qrPreviewImg" style="width:160px;height:160px;display:none">
+          <div id="qrPlaceholder" style="width:160px;height:160px;background:var(--wve-offwhite);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--wve-pale)">
+            <i class="bi bi-qr-code" style="font-size:2.5rem"></i>
+          </div>
+        </div>
+        <div id="previewUrl" style="font-size:.75rem;color:var(--wve-muted);word-break:break-all">Vul een URL in voor preview</div>
+      </div>
+    </div>
+    <div style="margin-top:14px;background:var(--wve-offwhite);border-radius:9px;padding:14px 16px;font-size:.78rem;color:var(--wve-muted)">
+      <strong style="color:var(--wve-basis);display:block;margin-bottom:6px"><i class="bi bi-lightbulb me-1"></i>Tip</strong>
+      Na aanmaken kun je de QR code als PNG downloaden en direct in je drukwerk gebruiken. De scan URL eindigt op <code>/c/jouw-code</code> en loopt via qr.wve.nl.
+    </div>
+  </div>
+</div>
+''', f'''
+<script>
+var BASE_URL = '{BASE_URL}';
+function updatePreview() {{
+  var dest = document.getElementById('destInput').value;
+  var codeId = document.getElementById('codeIdInput').value || '...';
+  var scanUrl = BASE_URL + '/c/' + codeId;
+  document.getElementById('previewUrl').textContent = dest ? scanUrl : 'Vul een URL in voor preview';
+}}
+</script>
+''')
+
+# ── CODE DETAIL ───────────────────────────────────────────────────────────────
+CODE_DETAIL_TMPL = _page('''
+<div class="page-header">
+  <div>
+    <div style="font-size:.75rem;color:var(--wve-muted);margin-bottom:4px">
+      <a href="/admin/codes">QR Codes</a> <i class="bi bi-chevron-right" style="font-size:.65rem"></i> {{code.name}}
+    </div>
+    <h1 class="page-title" style="margin-bottom:2px"><i class="bi bi-bar-chart-line"></i>{{code.name}}</h1>
+    {% if code.campaign %}<span class="badge badge-active" style="font-size:.72rem">{{code.campaign}}</span>{% endif %}
+    {% if not code.is_active %}<span class="badge badge-inactive ms-1">inactief</span>{% endif %}
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <a href="/admin/codes/{{code.id}}/qr.png" class="btn-wve"><i class="bi bi-download"></i>Download QR</a>
+    <a href="/admin/codes/{{code.id}}/export" class="btn-outline"><i class="bi bi-filetype-csv"></i>Export CSV</a>
+    <a href="/admin/codes/{{code.id}}/toggle" class="btn-outline">
       {% if code.is_active %}Deactiveer{% else %}Activeer{% endif %}
     </a>
-    <a href="/admin/codes" class="btn-wve-outline btn-wve-sm"><i class="bi bi-arrow-left me-1"></i>Terug</a>
   </div>
 </div>
 
-<div class="row g-3 mb-4">
-  <div class="col-sm-4">
-    <div class="stat-card text-center" style="border-left-color:var(--wve-accent)">
-      <div class="stat-label">Totaal scans</div>
-      <div class="stat-value green">{{total_scans}}</div>
+<div style="display:grid;grid-template-columns:1fr 200px;gap:20px;margin-bottom:20px;align-items:start">
+  <div>
+    <div class="stats-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
+      <div class="stat-card accent">
+        <div class="stat-label">Totaal scans</div>
+        <div class="stat-value">{{total_scans}}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unieke bezoekers</div>
+        <div class="stat-value">{{unique_ips}}</div>
+      </div>
+      <div class="stat-card dim">
+        <div class="stat-label">Scan URL</div>
+        <div style="margin-top:6px">
+          <div class="copy-wrap" style="flex-wrap:wrap">
+            <code style="font-size:.73rem;word-break:break-all">{{scan_url}}</code>
+            <button class="btn-icon" onclick="copyText('{{scan_url}}', this)" title="Kopieer URL" style="flex-shrink:0"><i class="bi bi-clipboard"></i></button>
+          </div>
+        </div>
+      </div>
     </div>
-  </div>
-  <div class="col-sm-4">
-    <div class="stat-card text-center">
-      <div class="stat-label">Unieke bezoekers</div>
-      <div class="stat-value">{{unique_ips}}</div>
-    </div>
-  </div>
-  <div class="col-sm-4">
-    <div class="stat-card text-center" style="border-left-color:var(--wve-pale)">
-      <div class="stat-label">Bestemming</div>
-      <div class="text-truncate" style="font-size:.8rem;font-weight:500;color:var(--wve-basis);margin-top:6px">{{code.destination}}</div>
-    </div>
-  </div>
-</div>
 
-<div class="row g-3 mb-4">
-  <div class="col-lg-8">
     <div class="wve-card">
-      <div class="card-header">Scans per dag — 30 dagen</div>
-      <div class="card-body"><canvas id="scanChart" height="110"></canvas></div>
+      <div class="wve-card-header">
+        <span class="wve-card-title">Scans over tijd</span>
+        <div class="chart-toolbar">
+          <button class="chart-btn active" onclick="switchRange(this,7)">7d</button>
+          <button class="chart-btn" onclick="switchRange(this,30)">30d</button>
+        </div>
+      </div>
+      <div class="wve-card-body"><canvas id="scanChart" height="110"></canvas></div>
     </div>
   </div>
-  <div class="col-lg-4">
-    <div class="wve-card h-100">
-      <div class="card-header">Apparaat</div>
-      <div class="card-body d-flex align-items-center justify-content-center">
-        <canvas id="deviceChart"></canvas>
+
+  <div>
+    <div class="wve-card">
+      <div class="wve-card-header"><span class="wve-card-title">QR Code</span></div>
+      <div class="wve-card-body" style="text-align:center;padding:20px">
+        <div class="qr-preview" style="margin:0 auto 12px;padding:14px">
+          <img src="data:image/png;base64,{{qr_b64}}" style="width:150px;height:150px;display:block">
+        </div>
+        <a href="/admin/codes/{{code.id}}/qr.png" class="btn-wve sm" style="width:100%;justify-content:center"><i class="bi bi-download"></i>Download PNG</a>
       </div>
     </div>
   </div>
 </div>
 
-<div class="row g-3 mb-4">
-  <div class="col-md-4">
-    <div class="wve-card">
-      <div class="card-header">Top landen</div>
-      <table class="table mb-0">
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
+  <div class="wve-card">
+    <div class="wve-card-header">
+      <span class="wve-card-title">Apparaat</span>
+    </div>
+    <div class="wve-card-body" style="display:flex;align-items:center;justify-content:center;min-height:160px">
+      {% if by_device %}
+        <canvas id="deviceChart" style="max-width:180px"></canvas>
+      {% else %}
+        <div class="empty-state" style="padding:16px"><i class="bi bi-phone" style="font-size:1.5rem"></i><p style="font-size:.8rem">Geen data</p></div>
+      {% endif %}
+    </div>
+  </div>
+  <div class="wve-card">
+    <div class="wve-card-header"><span class="wve-card-title">Top landen</span></div>
+    <div class="wve-card-body p-0">
+      {% if by_country %}
+      <table class="wve-table">
         {% for r in by_country %}
-        <tr><td>{{r.country}}</td><td class="text-end" style="color:var(--wve-accent);font-weight:600">{{r.n}}</td></tr>
+        <tr><td>{{r.country}}</td><td style="text-align:right;font-weight:600;color:var(--wve-accent)">{{r.n}}</td></tr>
         {% endfor %}
-        {% if not by_country %}<tr><td colspan="2" class="text-center py-3" style="color:var(--wve-muted)">Geen data</td></tr>{% endif %}
       </table>
+      {% else %}<div class="empty-state" style="padding:24px"><p style="font-size:.8rem">Geen data</p></div>{% endif %}
     </div>
   </div>
-  <div class="col-md-4">
-    <div class="wve-card">
-      <div class="card-header">Top steden</div>
-      <table class="table mb-0">
+  <div class="wve-card">
+    <div class="wve-card-header"><span class="wve-card-title">Top steden</span></div>
+    <div class="wve-card-body p-0">
+      {% if by_city %}
+      <table class="wve-table">
         {% for r in by_city %}
-        <tr><td>{{r.city}}</td><td style="color:var(--wve-muted)">{{r.country}}</td><td class="text-end" style="color:var(--wve-accent);font-weight:600">{{r.n}}</td></tr>
+        <tr><td>{{r.city}}</td><td style="color:var(--wve-muted);font-size:.78rem">{{r.country}}</td><td style="text-align:right;font-weight:600;color:var(--wve-accent)">{{r.n}}</td></tr>
         {% endfor %}
-        {% if not by_city %}<tr><td colspan="3" class="text-center py-3" style="color:var(--wve-muted)">Geen data</td></tr>{% endif %}
       </table>
-    </div>
-  </div>
-  <div class="col-md-4">
-    <div class="wve-card">
-      <div class="card-header">Besturingssysteem</div>
-      <table class="table mb-0">
-        {% for r in by_os %}
-        <tr><td>{{r.os}}</td><td class="text-end" style="color:var(--wve-accent);font-weight:600">{{r.n}}</td></tr>
-        {% endfor %}
-        {% if not by_os %}<tr><td colspan="2" class="text-center py-3" style="color:var(--wve-muted)">Geen data</td></tr>{% endif %}
-      </table>
+      {% else %}<div class="empty-state" style="padding:24px"><p style="font-size:.8rem">Geen data</p></div>{% endif %}
     </div>
   </div>
 </div>
 
 <div class="wve-card">
-  <div class="card-header">Recente scans</div>
-  <div class="table-responsive">
-    <table class="table mb-0">
-      <thead>
-        <tr><th>Tijdstip</th><th>IP</th><th>Land</th><th>Stad</th><th>ISP</th><th>Apparaat</th><th>OS</th><th>Browser</th><th>Taal</th></tr>
-      </thead>
+  <div class="wve-card-header">
+    <span class="wve-card-title">Recente scans</span>
+    <a href="/admin/codes/{{code.id}}/export" class="btn-outline sm"><i class="bi bi-download"></i>Export CSV</a>
+  </div>
+  <div class="wve-card-body p-0" style="overflow-x:auto">
+    {% if recent_scans %}
+    <table class="wve-table">
+      <thead><tr><th>Tijdstip</th><th>IP</th><th>Land</th><th>Stad</th><th>ISP</th><th>Apparaat</th><th>OS</th><th>Browser</th><th>Taal</th></tr></thead>
       <tbody>
         {% for s in recent_scans %}
         <tr>
-          <td style="color:var(--wve-muted)">{{s.scanned_at}}</td>
+          <td style="color:var(--wve-muted);white-space:nowrap;font-size:.78rem">{{s.scanned_at}}</td>
           <td><code>{{s.ip or '—'}}</code></td>
           <td>{{s.country or '—'}}</td>
           <td>{{s.city or '—'}}</td>
-          <td style="color:var(--wve-muted)">{{s.isp or '—'}}</td>
-          <td><span class="dev-badge dev-{{s.device or 'onbekend'}}">{{s.device or '?'}}</span></td>
-          <td>{{s.os or '—'}}</td>
-          <td>{{s.browser or '—'}}</td>
-          <td style="color:var(--wve-muted)">{{s.language or '—'}}</td>
+          <td style="color:var(--wve-muted)" class="truncate">{{s.isp or '—'}}</td>
+          <td><span class="badge badge-{{s.device or 'onbekend'}}">{{s.device or '?'}}</span></td>
+          <td style="font-size:.78rem">{{s.os or '—'}}</td>
+          <td style="font-size:.78rem" class="truncate">{{s.browser or '—'}}</td>
+          <td style="color:var(--wve-muted);font-size:.78rem">{{s.language or '—'}}</td>
         </tr>
         {% endfor %}
-        {% if not recent_scans %}<tr><td colspan="9" class="text-center py-5" style="color:var(--wve-muted)">Nog geen scans</td></tr>{% endif %}
       </tbody>
     </table>
+    {% else %}
+    <div class="empty-state"><i class="bi bi-cursor"></i><p>Nog geen scans voor deze code</p></div>
+    {% endif %}
   </div>
 </div>
-
-''' + _FOOTER + '''
+''', '''
 <script>
-new Chart(document.getElementById('scanChart'),{
-  type:'bar',
-  data:{
-    labels:{{chart_labels|safe}},
-    datasets:[{label:'Scans',data:{{chart_values|safe}},
-      backgroundColor:'rgba(82,183,136,.35)',borderColor:'#40916C',borderWidth:2,borderRadius:4}]
-  },
-  options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#B7E4C733'},ticks:{color:'#4A5568',font:{family:'Poppins',size:11}}},x:{grid:{display:false},ticks:{color:'#4A5568',font:{family:'Poppins',size:11}}}}}
-});
-const devData=[{% for r in by_device %}{label:'{{r.device}}',n:{{r.n}}}{% if not loop.last %},{% endif %}{% endfor %}];
-if(devData.length){
-  new Chart(document.getElementById('deviceChart'),{
-    type:'doughnut',
-    data:{
-      labels:devData.map(d=>d.label),
-      datasets:[{data:devData.map(d=>d.n),
-        backgroundColor:['#52B788','#2D6A4F','#74C69D','#B7E4C7'],
-        borderWidth:0}]
+''' + _CHART_JS + '''
+var labels7  = {{chart_labels_7|safe}};
+var values7  = {{chart_values_7|safe}};
+var labels30 = {{chart_labels|safe}};
+var values30 = {{chart_values|safe}};
+var scanChart = makeBarChart('scanChart', labels7, values7);
+function switchRange(btn, days) {
+  document.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  scanChart.data.labels  = days === 7 ? labels7  : labels30;
+  scanChart.data.datasets[0].data = days === 7 ? values7 : values30;
+  scanChart.update();
+}
+var devData = [{% for r in by_device %}{label:'{{r.device}}',n:{{r.n}}}{% if not loop.last %},{% endif %}{% endfor %}];
+if(devData.length && document.getElementById('deviceChart')) {
+  new Chart(document.getElementById('deviceChart'), {
+    type: 'doughnut',
+    data: {
+      labels: devData.map(d => d.label),
+      datasets: [{
+        data: devData.map(d => d.n),
+        backgroundColor: ['#52B788','#2D6A4F','#74C69D','#B7E4C7'],
+        borderWidth: 0,
+        hoverOffset: 4,
+      }]
     },
-    options:{plugins:{legend:{position:'bottom',labels:{font:{family:'Poppins',size:11},color:'#375e53'}}},cutout:'60%'}
+    options: {
+      plugins: { legend: { position: 'bottom', labels: { font: { size: 11 }, padding: 10 } } },
+      cutout: '58%'
+    }
   });
 }
 </script>
-</body></html>'''
+''')
+
 
 # ─── Start ───────────────────────────────────────────────────────────────────
 
